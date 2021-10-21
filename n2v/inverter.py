@@ -101,9 +101,8 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
         ----------
         wfn : psi4.core.{RHF, UHF, RKS, UKS, Wavefunction, CCWavefuncion...}
             Psi4 wavefunction object
-        pbs: str. default="same". If same, then the potential basis set (pbs)
-                 is the same as orbital basis set (i.e. ao). Notice that
-                 pbs is not needed for some methods
+        pbs: Psi4.core.BasisSet or str "same". If same, pbs will be the same as wfn.basisset()
+             or a user specified basis set psi4.core.BasisSet.build(basis_geometry, "BASIS", "RHF" or "UHF")
         """
         self.wfn       = wfn
         self.pbs_str   = pbs
@@ -115,11 +114,13 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
         self.nbeta     = wfn.nbeta()
         self.ref       = 1 if psi4.core.get_global_option("REFERENCE") == "RHF" or \
                               psi4.core.get_global_option("REFERENCE") == "RKS" else 2
-        self.jk        = wfn.jk() if hasattr(wfn, "jk") == True else self.generate_jk()
+
+        self.jk        = wfn.jk()
+        self.ERI       = None
+
         self.Dt        = (np.array(wfn.Da_subset("AO")), np.array(wfn.Db_subset("AO")))
         self.ct        = (np.array(wfn.Ca_subset("AO", "OCC")), np.array(wfn.Cb_subset("AO", "OCC")))
-        self.pbs       = self.basis if pbs == "same" \
-                                    else psi4.core.BasisSet.build( self.mol, key='BASIS', target=self.pbs_str)
+        self.pbs       = self.basis if pbs == "same" else pbs
         self.npbs      = self.pbs.nbf()
         self.v_pbs     = np.zeros( (self.npbs) ) if self.ref == 1 \
                                                  else np.zeros( 2 * self.npbs )
@@ -151,6 +152,12 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
         self.V = np.array(mints.ao_potential()).copy()
         self.T_pbs = np.array(mints.ao_kinetic(self.pbs, self.pbs)).copy()
 
+        # when JK is none, produce ERI matrix
+        if self.jk is None:
+            print(f"Going to assign {self.nbf ** 4 * 8 / 1e6} MB for ERI.")
+            self.ERI = np.array(mints.ao_eri())
+
+
     def generate_jk(self, gen_K=False):
         """
         Creates jk object for generation of Coulomb and Exchange matrices
@@ -178,9 +185,8 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
         self.jk.compute()
         self.jk.C_clear()
 
-        J = (np.array(self.jk.J()[0]), np.array(self.jk.J()[1]))
+        J = (np.copy(self.jk.J()[0]), np.copy(self.jk.J()[1]))
         K = []
-
         return J, K
 
     def diagonalize(self, matrix, ndocc):
@@ -470,23 +476,30 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
         N = self.nalpha + self.nbeta
 
         if self.J0 is None:
-            if type(self.wfn) == psi4.core.CCWavefunction:
-                nbf = self.nbf
-                C_NO = psi4.core.Matrix(nbf, nbf)
-                eigs_NO = psi4.core.Vector(nbf)
-                self.wfn.Da().diagonalize(C_NO, eigs_NO, psi4.core.DiagonalizeOrder.Descending)
-                occu = np.sqrt(eigs_NO.np)
-                New_Orb_a = occu * C_NO.np
-                assert np.allclose(New_Orb_a @ New_Orb_a.T, self.Dt[0])
-                if self.ref == 1:
-                    New_Orb_b = New_Orb_a
+            if self.jk is not None:
+                if type(self.wfn) == psi4.core.CCWavefunction:
+                    nbf = self.nbf
+                    C_NO = psi4.core.Matrix(nbf, nbf)
+                    eigs_NO = psi4.core.Vector(nbf)
+                    self.wfn.Da().diagonalize(C_NO, eigs_NO, psi4.core.DiagonalizeOrder.Descending)
+                    eigs_NO.np[eigs_NO.np < 0] = 0.0
+                    occu = np.sqrt(eigs_NO)
+                    New_Orb_a = occu * C_NO.np
+                    assert np.allclose(New_Orb_a @ New_Orb_a.T, self.Dt[0])
+                    if self.ref == 1:
+                        New_Orb_b = New_Orb_a
+                    else:
+                        self.wfn.Db().diagonalize(C_NO, eigs_NO, psi4.core.DiagonalizeOrder.Descending)
+                        occu = np.sqrt(eigs_NO.np)
+                        New_Orb_b = occu * C_NO.np
+                    self.J0 = self.form_jk(New_Orb_a, New_Orb_b)[0]
                 else:
-                    self.wfn.Db().diagonalize(C_NO, eigs_NO, psi4.core.DiagonalizeOrder.Descending)
-                    occu = np.sqrt(eigs_NO.np)
-                    New_Orb_b = occu * C_NO.np
-                self.J0 = self.form_jk(New_Orb_a, New_Orb_b)[0]
+                    self.J0, _ = self.form_jk(self.ct[0], self.ct[1])
+            elif self.ERI is not None:
+                self.J0 = contract("ijkl,ij", self.ERI, self.Dt[0] + self.Dt[1], optimize=True)
+                self.J0 = (self.J0, self.J0)
             else:
-                self.J0, _ = self.form_jk(self.ct[0], self.ct[1])
+                raise ValueError("Should not reach here.")
 
         if "fermi_amaldi" in guide_potential_components:
             v_fa = (1-1/N) * (self.J0[0] + self.J0[1])
