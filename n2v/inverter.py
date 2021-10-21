@@ -114,8 +114,10 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
         self.nbeta     = wfn.nbeta()
         self.ref       = 1 if psi4.core.get_global_option("REFERENCE") == "RHF" or \
                               psi4.core.get_global_option("REFERENCE") == "RKS" else 2
-
-        self.jk        = wfn.jk()
+        try:
+            self.jk        = wfn.jk()
+        except Exception:
+            self.jk        = None
         self.ERI       = None
 
         self.Dt        = (np.array(wfn.Da_subset("AO")), np.array(wfn.Db_subset("AO")))
@@ -496,8 +498,8 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
                 else:
                     self.J0, _ = self.form_jk(self.ct[0], self.ct[1])
             elif self.ERI is not None:
-                self.J0 = contract("ijkl,ij", self.ERI, self.Dt[0] + self.Dt[1], optimize=True)
-                self.J0 = (self.J0, self.J0)
+                self.J0 = (contract("ijkl,ij->kl", self.ERI, self.Dt[0], optimize=True),
+                           contract("ijkl,ij->kl", self.ERI, self.Dt[1], optimize=True))
             else:
                 raise ValueError("Should not reach here.")
 
