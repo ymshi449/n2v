@@ -155,10 +155,17 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
         self.T_pbs = np.array(mints.ao_kinetic(self.pbs, self.pbs)).copy()
 
         # when JK is none, produce ERI matrix
-        if self.jk is None:
+        if self.jk is None and self.ERI is None:
             print(f"Going to assign {self.nbf ** 4 * 8 / 1e6} MB for ERI.")
             self.ERI = np.array(mints.ao_eri())
 
+    def update_pbs(self, new_pbs: psi4.core.BasisSet):
+        self.pbs = new_pbs
+        self.npbs = self.pbs.nbf()
+
+        self.v_pbs = np.zeros((self.npbs)) if self.ref == 1 else np.zeros(2 * self.npbs)
+        self.generate_mints_matrices()
+        return
 
     def generate_jk(self, gen_K=False):
         """
@@ -472,36 +479,38 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
             Can be chosen from {"fermi_amandi", "svwn"}
         """
 
+        if guide_potential_components is None and self.va is not None and self.vb is not None:
+            return
+
         self.va = np.zeros_like(self.T)
         self.vb = np.zeros_like(self.T)
 
         N = self.nalpha + self.nbeta
 
-        if self.J0 is None:
-            if self.jk is not None:
-                if type(self.wfn) == psi4.core.CCWavefunction:
-                    nbf = self.nbf
-                    C_NO = psi4.core.Matrix(nbf, nbf)
-                    eigs_NO = psi4.core.Vector(nbf)
-                    self.wfn.Da().diagonalize(C_NO, eigs_NO, psi4.core.DiagonalizeOrder.Descending)
-                    eigs_NO.np[eigs_NO.np < 0] = 0.0
-                    occu = np.sqrt(eigs_NO)
-                    New_Orb_a = occu * C_NO.np
-                    assert np.allclose(New_Orb_a @ New_Orb_a.T, self.Dt[0])
-                    if self.ref == 1:
-                        New_Orb_b = New_Orb_a
-                    else:
-                        self.wfn.Db().diagonalize(C_NO, eigs_NO, psi4.core.DiagonalizeOrder.Descending)
-                        occu = np.sqrt(eigs_NO.np)
-                        New_Orb_b = occu * C_NO.np
-                    self.J0 = self.form_jk(New_Orb_a, New_Orb_b)[0]
+        if self.jk is not None:
+            if type(self.wfn) == psi4.core.CCWavefunction:
+                nbf = self.nbf
+                C_NO = psi4.core.Matrix(nbf, nbf)
+                eigs_NO = psi4.core.Vector(nbf)
+                self.wfn.Da().diagonalize(C_NO, eigs_NO, psi4.core.DiagonalizeOrder.Descending)
+                eigs_NO.np[eigs_NO.np < 0] = 0.0
+                occu = np.sqrt(eigs_NO)
+                New_Orb_a = occu * C_NO.np
+                assert np.allclose(New_Orb_a @ New_Orb_a.T, self.Dt[0])
+                if self.ref == 1:
+                    New_Orb_b = New_Orb_a
                 else:
-                    self.J0, _ = self.form_jk(self.ct[0], self.ct[1])
-            elif self.ERI is not None:
-                self.J0 = (contract("ijkl,ij->kl", self.ERI, self.Dt[0], optimize=True),
-                           contract("ijkl,ij->kl", self.ERI, self.Dt[1], optimize=True))
+                    self.wfn.Db().diagonalize(C_NO, eigs_NO, psi4.core.DiagonalizeOrder.Descending)
+                    occu = np.sqrt(eigs_NO.np)
+                    New_Orb_b = occu * C_NO.np
+                self.J0 = self.form_jk(New_Orb_a, New_Orb_b)[0]
             else:
-                raise ValueError("Should not reach here.")
+                self.J0, _ = self.form_jk(self.ct[0], self.ct[1])
+        elif self.ERI is not None:
+            self.J0 = (contract("ijkl,ij->kl", self.ERI, self.Dt[0], optimize=True),
+                       contract("ijkl,ij->kl", self.ERI, self.Dt[1], optimize=True))
+        else:
+            raise ValueError("Should not reach here.")
 
         if "fermi_amaldi" in guide_potential_components:
             v_fa = (1-1/N) * (self.J0[0] + self.J0[1])
