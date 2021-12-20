@@ -56,14 +56,13 @@ class WuYang():
             self.v_pbs = opt_results.x
             self.opt_info = opt_results
             print("Optimization was unsucessful (|grad|=%.2e) within %i iterations, "
-                  "try a different initial guess. \n %s"% (np.linalg.norm(opt_results.jac), opt_results.nit, opt_results.message)
-                             )
+                  "try a different initial guess. \n %s"% (np.linalg.norm(opt_results.jac), opt_results.nit, opt_results.message), end="\r")
             # raise ValueError("Optimization was unsucessful (|grad|=%.2e) within %i iterations, "
             #                  "try a different initial guess. %s"% (np.linalg.norm(opt_results.jac), opt_results.nit, opt_results.message)
             #                  )
         else:
             print("Optimization Successful within %i iterations! "
-                  "|grad|=%.2e" % (opt_results.nit, np.linalg.norm(opt_results.jac)))
+                  "|grad|=%.2e" % (opt_results.nit, np.linalg.norm(opt_results.jac)), end="\r")
             self.v_pbs = opt_results.x
             self.opt_info = opt_results
 

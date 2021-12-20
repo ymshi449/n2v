@@ -165,6 +165,8 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
 
         self.v_pbs = np.zeros((self.npbs)) if self.ref == 1 else np.zeros(2 * self.npbs)
         self.generate_mints_matrices()
+
+        print("Potential Basis Set is update to %s with nbf=%i." % (self.pbs.name(), self.npbs))
         return
 
     def generate_jk(self, gen_K=False):
