@@ -475,18 +475,15 @@ class Grider(Cubeprop):
 
         return vext, hartree, v_fa, esp
 
-    def on_grid_vxc(self, func_id=1, grid=None, Da=None, Db=None,
+    def on_grid_vxc(self, grid=None, Da=None, Db=None,
                           Vpot=None):
         """
-        Generates Vxc given grid
+        Generates SVWN Vxc given grid
 
         Parameters
         ----------
         Da, Db: np.ndarray
             Alpha, Beta densities. Shape: (num_ao_basis, num_ao_basis)
-        func_id: int
-            Functional ID associated with Density Functional Approximationl.
-            Full list of functionals: https://www.tddft.org/programs/libxc/functionals/
         grid: np.ndarray Shape: (3, npoints) or (4, npoints) or tuple for block_handler (return of grid_to_blocks)
             grid where density will be computed.
         Vpot: psi4.core.VBase
@@ -500,9 +497,6 @@ class Grider(Cubeprop):
             Shape: (npoints, )
 
         """
-
-        if func_id != 1:
-            raise ValueError("Only LDA fucntionals are supported on the grid")
 
         if Da is None:
             Da = self.Dt[0]
@@ -535,11 +529,14 @@ class Grider(Cubeprop):
                 ingredients["rho"] = density[offset - b_points : offset, :]
 
             if self.ref == 1:
-                functional = Functional(1, 1)
+                functional_x = Functional(1, 1)
+                functional_c = Functional(8, 1)
             else:
-                functional = Functional(1, 2) 
-            xc_dictionary = functional.compute(ingredients)
-            vxc[offset - b_points : offset, :] = xc_dictionary['vrho']
+                functional_x = Functional(1, 2) 
+                functional_c = Functional(8, 2) 
+            x_dictionary = functional_x.compute(ingredients)
+            c_dictionary = functional_c.compute(ingredients)
+            vxc[offset - b_points : offset, :] = x_dictionary['vrho'] + c_dictionary["vrho"]
 
         return np.squeeze(vxc)
 
