@@ -21,6 +21,8 @@ from .methods.pdeco import PDECO
 from .methods.direct import Direct
 from .grid.grider import Grider
 
+from scipy.linalg import inv
+
 @dataclass
 class data_bucket:
     """
@@ -114,11 +116,12 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
         self.nbeta     = wfn.nbeta()
         self.ref       = 1 if psi4.core.get_global_option("REFERENCE") == "RHF" or \
                               psi4.core.get_global_option("REFERENCE") == "RKS" else 2
-        try:
-            self.jk        = wfn.jk()
-        except Exception:
-            self.jk        = None
-        self.ERI       = None
+        # try:
+        #     self.jk        = wfn.jk()
+        # except Exception:
+        #     self.jk        = None
+        self.jk        = None # from now on I will set jk to be None because it takes orbitals.
+        self.ERI_Quv_DF, self.ERI_PQ_DF = None, None
 
         self.Dt        = (np.array(wfn.Da_subset("AO")), np.array(wfn.Db_subset("AO")))
         self.ct        = (np.array(wfn.Ca_subset("AO", "OCC")), np.array(wfn.Cb_subset("AO", "OCC")))
@@ -155,9 +158,14 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
         self.T_pbs = np.array(mints.ao_kinetic(self.pbs, self.pbs)).copy()
 
         # when JK is none, produce ERI matrix
-        if self.jk is None and self.ERI is None:
-            print(f"Going to assign {self.nbf ** 4 * 8 / 1e6} MB for ERI.")
-            self.ERI = np.array(mints.ao_eri())
+        if self.jk is None and self.ERI_Quv_DF is None:
+            aux = psi4.core.BasisSet.build(self.mol, "DF_BASIS_SCF", "", "JKFIT",  self.basis_str)
+            zero_bas = psi4.core.BasisSet.zero_ao_basis_set()
+            self.ERI_Quv_DF = np.squeeze(mints.ao_eri(aux, zero_bas, self.basis, self.basis))
+            self.ERI_Quv_DF = 0.5 * (self.ERI_Quv_DF + np.transpose(self.ERI_Quv_DF, [0,2,1]))
+            self.ERI_PQ_DF = np.squeeze(mints.ao_eri(aux, zero_bas, aux, zero_bas))
+            self.ERI_PQ_DF = inv(self.ERI_PQ_DF, overwrite_a=True)
+            self.ERI_PQ_DF = 0.5 * (self.ERI_PQ_DF + self.ERI_PQ_DF.T)
 
     def update_pbs(self, new_pbs: psi4.core.BasisSet):
         self.pbs = new_pbs
@@ -508,9 +516,9 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
                 self.J0 = self.form_jk(New_Orb_a, New_Orb_b)[0]
             else:
                 self.J0, _ = self.form_jk(self.ct[0], self.ct[1])
-        elif self.ERI is not None:
-            self.J0 = (contract("ijkl,ij->kl", self.ERI, self.Dt[0], optimize=True),
-                       contract("ijkl,ij->kl", self.ERI, self.Dt[1], optimize=True))
+        elif self.ERI_PQ_DF is not None:
+            self.J0 = (np.einsum('Qrs,QP,Ppq,pq->rs', self.ERI_Quv_DF, self.ERI_PQ_DF, self.ERI_Quv_DF, self.Dt[0], optimize=True),
+                       np.einsum('Qrs,QP,Ppq,pq->rs', self.ERI_Quv_DF, self.ERI_PQ_DF, self.ERI_Quv_DF, self.Dt[1], optimize=True))
         else:
             raise ValueError("Should not reach here.")
 
