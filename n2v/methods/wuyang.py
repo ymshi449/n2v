@@ -20,7 +20,7 @@ class WuYang():
     regul_norm = None  # Regularization norm: ||v||^2
     lambda_reg = None  # Regularization constant
 
-    def wuyang(self, opt_max_iter, reg=None, tol=1e-7, gtol=1e-3,
+    def wuyang(self, opt_max_iter, reg=None, tol=None, gtol=1e-3,
                opt_method='trust-krylov', opt=None):
         """
         Calls scipy minimizer to minimize lagrangian. 
@@ -51,18 +51,22 @@ class WuYang():
                                     tol    = tol,
                                     options = opt
                                     )
-
+        # print("optimizer returned.")
         if opt_results.success == False:
             self.v_pbs = opt_results.x
             self.opt_info = opt_results
-            print("Optimization was unsucessful (|grad|=%.2e) within %i iterations, "
-                  "try a different initial guess. \n %s"% (np.linalg.norm(opt_results.jac), opt_results.nit, opt_results.message), end="\r")
+            # print("Optimization was unsucessful (|grad|=%.2e) within %i iterations, "
+            #       "try a different initial guess. \n %s"% (np.linalg.norm(opt_results.jac), opt_results.nit, opt_results.message), end="\n")
+            if self.lambda_reg is None:
+                print(f"Optimization was unsucessful with target gtol={gtol:.2e} and reg=None.")
+            else:
+                print(f"Optimization was unsucessful with target gtol={gtol:.2e} and reg={self.lambda_reg:.2e}.")
             # raise ValueError("Optimization was unsucessful (|grad|=%.2e) within %i iterations, "
             #                  "try a different initial guess. %s"% (np.linalg.norm(opt_results.jac), opt_results.nit, opt_results.message)
             #                  )
         else:
-            print("Optimization Successful within %i iterations! "
-                  "|grad|=%.2e" % (opt_results.nit, np.linalg.norm(opt_results.jac)), end="\r")
+            # print("Optimization Successful within %i iterations! "
+            #       "|grad|=%.2e" % (opt_results.nit, np.linalg.norm(opt_results.jac)), end="\n")
             self.v_pbs = opt_results.x
             self.opt_info = opt_results
 
@@ -89,6 +93,7 @@ class WuYang():
         Lagrangian to be minimized wrt external potential
         Equation (5) of main reference
         """
+        # print("Langrangian")
         # If v is not updated, will not re-calculate.
         if not np.allclose(v, self.v_pbs):
             self._diagonalize_with_potential_pbs(v)
@@ -121,7 +126,7 @@ class WuYang():
             self.regul_norm = norm
 
         # if print_flag:
-        #    print(f"Kinetic: {kinetic:6.4f} | Potential: {np.abs(potential):6.4e} | From Optimization: {np.abs(optimizing):6.4e}")
+        # print(f"Kinetic: {kinetic:6.4f} | Potential: {np.abs(potential):6.4e} | From Optimization: {np.abs(optimizing):6.4e}")
 
         return - L
 
@@ -130,6 +135,7 @@ class WuYang():
         Calculates gradient wrt target density
         Equation (11) of main reference
         """
+        # print("|grad| enter")
         if not np.allclose(v, self.v_pbs):
             self._diagonalize_with_potential_pbs(v)
         self.grad_a = contract('ij,ijt->t', (self.Da - self.Dt[0]), self.S3)
@@ -148,7 +154,8 @@ class WuYang():
             else:
                 self.grad[:self.npbs] -= 2 * self.lambda_reg*np.dot(T, v[:self.npbs])
                 self.grad[self.npbs:] -= 2 * self.lambda_reg*np.dot(T, v[self.npbs:])
-
+        
+        # print("|grad|:", np.linalg.norm(self.grad))
         return -self.grad
 
     def hessian_wy(self, v):
@@ -156,7 +163,7 @@ class WuYang():
         Calculates gradient wrt target density
         Equation (13) of main reference
         """
-
+        # print("|Hess| enter")
         if not np.allclose(v, self.v_pbs):
             self._diagonalize_with_potential_pbs(v)
 
@@ -184,6 +191,7 @@ class WuYang():
                             [np.zeros((self.npbs, self.npbs)), Hb                              ]]
                         )
 
+        # print("|hess|:", np.linalg.norm(Hs))
         return - Hs
 
     def find_regularization_constant_wy(self, opt_max_iter, opt_method="trust-krylov", gtol=1e-3,
