@@ -95,7 +95,7 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
     --------
 
     """
-    def __init__(self, wfn, pbs="same", debug=False):
+    def __init__(self, wfn, pbs="same", debug=False, ref=None):
         """
         Handles Inversion
         
@@ -114,8 +114,11 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
         self.nbf       = wfn.basisset().nbf()
         self.nalpha    = wfn.nalpha()
         self.nbeta     = wfn.nbeta()
-        self.ref       = 1 if psi4.core.get_global_option("REFERENCE") == "RHF" or \
-                              psi4.core.get_global_option("REFERENCE") == "RKS" else 2
+        if ref is None:
+            self.ref       = 1 if psi4.core.get_global_option("REFERENCE") == "RHF" or \
+                                psi4.core.get_global_option("REFERENCE") == "RKS" else 2
+        else:
+            self.ref = ref
         # try:
         #     self.jk        = wfn.jk()
         # except Exception:
