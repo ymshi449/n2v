@@ -107,7 +107,7 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
              or a user specified basis set psi4.core.BasisSet.build(basis_geometry, "BASIS", "RHF" or "UHF")
         """
         self.wfn       = wfn
-        self.pbs_str   = pbs
+
         self.mol       = wfn.molecule()
         self.basis     = wfn.basisset()
         self.basis_str = wfn.basisset().name()
@@ -128,11 +128,17 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
 
         self.Dt        = (np.array(wfn.Da_subset("AO")), np.array(wfn.Db_subset("AO")))
         self.ct        = (np.array(wfn.Ca_subset("AO", "OCC")), np.array(wfn.Cb_subset("AO", "OCC")))
-        self.pbs       = self.basis if pbs == "same" else pbs
-        self.npbs      = self.pbs.nbf()
-        self.v_pbs     = np.zeros( (self.npbs) ) if self.ref == 1 \
-                                                 else np.zeros( 2 * self.npbs )
-        self.generate_mints_matrices()
+        if pbs == "same":
+            self.pbs       = self.basis
+            self.pbs_str   = pbs
+            self.npbs      = self.pbs.nbf()
+            self.v_pbs     = np.zeros( (self.npbs) ) if self.ref == 1 \
+                                                        else np.zeros( 2 * self.npbs )
+            self.generate_mints_matrices()
+        else:
+            self.update_pbs(pbs)
+            
+
         self.grid = data_bucket
         self.cubic_grid = data_bucket
         
