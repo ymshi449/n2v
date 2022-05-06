@@ -6,7 +6,7 @@ Functions associated with wuyang inversion
 
 import numpy as np
 from opt_einsum import contract
-from scipy.optimize import minimize
+from scipy.optimize import minimize, fmin_ncg
 
 class WuYang():
     """
@@ -41,6 +41,16 @@ class WuYang():
                                     tol     = tol,
                                     options = opt
                                     )
+        elif opt_method.lower() == 'fmin_ncg':
+            opt_results = fmin_ncg( f =self.lagrangian_wy,
+                                    x0  = self.v_pbs,
+                                    fprime = self.gradient_wy,
+                                    fhess = self.hessian_wy,
+                                    avextol=gtol,
+                                    maxiter=opt_max_iter,
+                                    disp=False,
+                                    full_output=True
+                                    )
 
         else:
             opt_results = minimize( fun = self.lagrangian_wy,
@@ -52,23 +62,36 @@ class WuYang():
                                     options = opt
                                     )
         # print("optimizer returned.")
-        if opt_results.success == False:
-            self.v_pbs = opt_results.x
-            self.opt_info = opt_results
-            # print("Optimization was unsucessful (|grad|=%.2e) within %i iterations, "
-            #       "try a different initial guess. \n %s"% (np.linalg.norm(opt_results.jac), opt_results.nit, opt_results.message), end="\n")
-            if self.lambda_reg is None:
-                print(f"Optimization was unsucessful with target gtol={gtol:.2e} and reg=None.")
+        if opt_method.lower() != 'fmin_ncg':
+            if opt_results.success == False:
+                self.v_pbs = opt_results.x
+                self.opt_info = opt_results
+                # print("Optimization was unsucessful (|grad|=%.2e) within %i iterations, "
+                #       "try a different initial guess. \n %s"% (np.linalg.norm(opt_results.jac), opt_results.nit, opt_results.message), end="\n")
+                if self.lambda_reg is None:
+                    print(f"Optimization was unsucessful with target gtol={gtol:.2e} and reg=None.")
+                else:
+                    print(f"Optimization was unsucessful with target gtol={gtol:.2e} and reg={self.lambda_reg:.2e}.")
+                # raise ValueError("Optimization was unsucessful (|grad|=%.2e) within %i iterations, "
+                #                  "try a different initial guess. %s"% (np.linalg.norm(opt_results.jac), opt_results.nit, opt_results.message)
+                #                  )
             else:
-                print(f"Optimization was unsucessful with target gtol={gtol:.2e} and reg={self.lambda_reg:.2e}.")
-            # raise ValueError("Optimization was unsucessful (|grad|=%.2e) within %i iterations, "
-            #                  "try a different initial guess. %s"% (np.linalg.norm(opt_results.jac), opt_results.nit, opt_results.message)
-            #                  )
+                # print("Optimization Successful within %i iterations! "
+                #       "|grad|=%.2e" % (opt_results.nit, np.linalg.norm(opt_results.jac)), end="\n")
+                self.v_pbs = opt_results.x
+                self.opt_info = opt_results
         else:
-            # print("Optimization Successful within %i iterations! "
-            #       "|grad|=%.2e" % (opt_results.nit, np.linalg.norm(opt_results.jac)), end="\n")
-            self.v_pbs = opt_results.x
-            self.opt_info = opt_results
+            if opt_results[-1] != 0:
+                self.v_pbs = opt_results[0]
+                self.opt_info = opt_results
+                print("fmin_ncg warnflag", opt_results[-1])
+                if self.lambda_reg is None:
+                    print(f"Optimization was unsucessful with target gtol={gtol:.2e} and reg=None.")
+                else:
+                    print(f"Optimization was unsucessful with target gtol={gtol:.2e} and reg={self.lambda_reg:.2e}.")
+            else:
+                self.v_pbs = opt_results[0]
+                self.opt_info = opt_results
 
     def _diagonalize_with_potential_pbs(self, v):
         """
@@ -95,9 +118,9 @@ class WuYang():
         """
         # print("Langrangian")
         # If v is not updated, will not re-calculate.
-        if not np.allclose(v, self.v_pbs):
-            self._diagonalize_with_potential_pbs(v)
-
+        # if not np.allclose(v, self.v_pbs, rtol=1e-7):
+        #     self._diagonalize_with_potential_pbs(v)
+        self._diagonalize_with_potential_pbs(v)
         self.grad_a = contract('ij,ijt->t', (self.Da - self.Dt[0]), self.S3)
         self.grad_b = contract('ij,ijt->t', (self.Db - self.Dt[1]), self.S3)
 
@@ -127,7 +150,7 @@ class WuYang():
 
         # if print_flag:
         # print(f"Kinetic: {kinetic:6.4f} | Potential: {np.abs(potential):6.4e} | From Optimization: {np.abs(optimizing):6.4e}")
-
+        # print(-L)
         return - L
 
     def gradient_wy(self, v):
@@ -136,8 +159,10 @@ class WuYang():
         Equation (11) of main reference
         """
         # print("|grad| enter")
-        if not np.allclose(v, self.v_pbs):
-            self._diagonalize_with_potential_pbs(v)
+        # if not np.allclose(v, self.v_pbs, rtol=1e-7):
+        #     self._diagonalize_with_potential_pbs(v)
+        self._diagonalize_with_potential_pbs(v)
+        
         self.grad_a = contract('ij,ijt->t', (self.Da - self.Dt[0]), self.S3)
         self.grad_b = contract('ij,ijt->t', (self.Db - self.Dt[1]), self.S3)
 
@@ -164,8 +189,9 @@ class WuYang():
         Equation (13) of main reference
         """
         # print("|Hess| enter")
-        if not np.allclose(v, self.v_pbs):
-            self._diagonalize_with_potential_pbs(v)
+        # if not np.allclose(v, self.v_pbs, rtol=1e-7):
+            # self._diagonalize_with_potential_pbs(v)
+        self._diagonalize_with_potential_pbs(v)
 
         na, nb = self.nalpha, self.nbeta
 
