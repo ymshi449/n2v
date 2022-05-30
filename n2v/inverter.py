@@ -271,7 +271,7 @@ class Inverter(Direct, ZMP, WuYang, PDECO, OC, MRKS):
         self.guide_components = guide_components
         self.va = np.zeros( (self.nbf, self.nbf) )
         self.vb = np.zeros( (self.nbf, self.nbf) )
-        self.J0 = self.compute_hartree(self.ct[0], self.ct[1])
+        self.J0 = self.compute_hartree(self.Dt[0], self.Dt[1])
         N       = self.nalpha + self.nbeta
 
         if self.eng_str == 'psi4':

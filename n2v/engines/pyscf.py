@@ -40,20 +40,24 @@ if has_pyscf:
             """
             self.mol = molecule
             self.basis_str = basis
-            self.pbs_str = pbs
             self.ref = ref
 
             if pbs != 'same': # Builds additional mole for secondary basis set
-                self.pbs = gto.Mole()
-                self.pbs.atom = self.mol.atom
-                self.pbs.basis = self.pbs_str
-                self.pbs.build()
+                if type(pbs) is str:
+                    self.pbs_str = pbs
+                    self.pbs = gto.Mole()
+                    self.pbs.atom = self.mol.atom
+                    self.pbs.basis = self.pbs_str
+                    self.pbs.build()
+                else:
+                    self.pbs = pbs
+                    self.pbs_str = self.pbs.basis
             else: 
                 self.pbs = None
 
             self.nalpha = self.mol.nelec[0]
             self.nbeta = self.mol.nelec[1]
-
+        
         def initialize(self):
             """
             Initializes different components for calculation.
@@ -166,7 +170,7 @@ if has_pyscf:
 
             return S4
 
-        def compute_hartree(self, Cocc_a, Cocc_b=None):
+        def compute_hartree(self, dma, dmb=None):
             """
             Computes Hartree Operator in AO basis
 
@@ -177,13 +181,11 @@ if has_pyscf:
             cb: np.ndarray
                 if ref == 2, cb -> Beta Occupied Orbitals in AO basis
             """
-            da = (Cocc_a @ Cocc_a.T)
-            if Cocc_a is not None:
-                db = (Cocc_b @ Cocc_b.T)
-            else:
-                db = da
+            if dmb is None:
+                dmb = dma
+                
             mf = dft.uks.UKS(self.mol)
-            J = mf.get_j(dm=[da, db])
+            J = mf.get_j(dm=[dma, dmb])
 
             return J
         

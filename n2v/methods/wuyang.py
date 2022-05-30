@@ -88,8 +88,9 @@ class WuYang():
         Equation (5) of main reference
         """
         # If v is not updated, will not re-calculate.
-        if not np.allclose(v, self.v_pbs):
-            self._diagonalize_with_potential_pbs(v)
+        # if not np.allclose(v, self.v_pbs):
+            # self._diagonalize_with_potential_pbs(v)
+        self._diagonalize_with_potential_pbs(v)
 
         self.grad_a = contract('ij,ijt->t', (self.Da - self.Dt[0]), self.S3)
         self.grad_b = contract('ij,ijt->t', (self.Db - self.Dt[1]), self.S3)
@@ -128,8 +129,9 @@ class WuYang():
         Calculates gradient wrt target density
         Equation (11) of main reference
         """
-        if not np.allclose(v, self.v_pbs):
-            self._diagonalize_with_potential_pbs(v)
+        # if not np.allclose(v, self.v_pbs):
+            # self._diagonalize_with_potential_pbs(v)
+        self._diagonalize_with_potential_pbs(v)
         self.grad_a = contract('ij,ijt->t', (self.Da - self.Dt[0]), self.S3)
         self.grad_b = contract('ij,ijt->t', (self.Db - self.Dt[1]), self.S3)
 
@@ -155,8 +157,9 @@ class WuYang():
         Equation (13) of main reference
         """
 
-        if not np.allclose(v, self.v_pbs):
-            self._diagonalize_with_potential_pbs(v)
+        # if not np.allclose(v, self.v_pbs):
+            # self._diagonalize_with_potential_pbs(v)
+        self._diagonalize_with_potential_pbs(v)
 
         na, nb = self.nalpha, self.nbeta
 

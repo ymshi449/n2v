@@ -46,9 +46,9 @@ if has_psi4:
             # if units != "Bohr":
             #     raise ValueError("Units need to be set in Bohr")
             self.basis_str = basis
-            self.ref = ref 
+            self.ref = ref
             self.pbs = pbs
-            self.pbs_str   = basis if pbs == 'same' else pbs
+            self.pbs_str   = basis if pbs == 'same' else pbs.name()
 
             self.nalpha = wfn.nalpha()
             self.nbeta = wfn.nbeta()
@@ -135,6 +135,7 @@ if has_psi4:
             """
             Generates Coulomb and Exchange matrices from occupied orbitals
             """
+            assert False, "TODO added eri and density fitting"
             Cocc_a = psi4.core.Matrix.from_array(Cocc_a)
             Cocc_b = psi4.core.Matrix.from_array(Cocc_b)
             self.jk.C_left_add(Cocc_a)
