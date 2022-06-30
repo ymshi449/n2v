@@ -151,6 +151,7 @@ class WuYang():
         # if print_flag:
         # print(f"Kinetic: {kinetic:6.4f} | Potential: {np.abs(potential):6.4e} | From Optimization: {np.abs(optimizing):6.4e}")
         # print(-L)
+        print(f"L={-L.real:.5f}, |grad|={np.linalg.norm(self.grad_a):.2e}, |x|={np.linalg.norm(v):.3f}.")
         return - L
 
     def gradient_wy(self, v):
