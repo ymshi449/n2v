@@ -23,7 +23,7 @@ class PDECO():
     lambda_reg = None  # Regularization constant
 
     def pdeco(self, opt_max_iter, reg=None, gtol=1e-3,
-              opt_method='L-BFGS-B', opt=None):
+              opt_method='L-BFGS-B', opt=None, **keywords):
         """
         Calls scipy minimizer to minimize lagrangian. 
         """
@@ -46,7 +46,8 @@ class PDECO():
                                     x0  = self.v_pbs, 
                                     jac = self.gradient_pbeco,
                                     method  = opt_method,
-                                    options = opt
+                                    options = opt,
+                                    **keywords,
                                     )
         else:
             raise ValueError(F'{opt_method} is not supported. Only BFGS '
@@ -104,15 +105,10 @@ class PDECO():
         Lagrangian to be minimized wrt external potential
         Equation (5) of main reference
         """
-
-        # If v is not updated, will not re-calculate.
-        if not np.allclose(v, self.v_pbs, atol=1e-15):
-            self._diagonalize_with_potential_pbs(v)
-
-        # self._diagonalize_with_potential_pbs(v)
+        self._diagonalize_with_potential_pbs(v)
 
         if self.ref == 1:
-            L = 4 * contract("ijkl,ij,kl", self.S4, self.Da - self.Dt[0], self.Da- self.Dt[0])
+            L = 4 * contract("ijkl,ij,kl", self.S4, self.Da - self.Dt[0], self.Da - self.Dt[0])
         else:
             # L = contract("ijkl,ij,kl", self.S4, self.Da+self.Db-self.Dt[0]-self.Dt[1], self.Da+self.Db-self.Dt[0]-self.Dt[1])
             L = contract("ijkl,ij,kl", self.S4, self.Da - self.Dt[0],
@@ -124,7 +120,7 @@ class PDECO():
             if self.ref == 1:
                 norm = 2 * (v[:self.npbs] @ T @ v[:self.npbs])
             else:
-                norm = (v[self.npbs:] @ T @ v[self.npbs:]) + (v[:self.npbs] @ T @ v[:self.npbs])
+                norm = (v[self.npbs:2*self.npbs] @ T @ v[self.npbs:2*self.npbs]) + (v[:self.npbs] @ T @ v[:self.npbs])
 
             L += norm * self.lambda_reg
             self.regul_norm = norm
@@ -135,36 +131,49 @@ class PDECO():
         Calculates gradient wrt target density
         Equation (11) of main reference
         """
-        # If v is not updated, will not re-calculate.
-        if not np.allclose(v, self.v_pbs, atol=1e-15):
-            self._diagonalize_with_potential_pbs(v)
+        self._diagonalize_with_potential_pbs(v)
 
         if self.ref == 1:
             grad_temp = np.zeros((self.nbf, self.nbf))
-            g = 8 * contract("ijkl,ij,km->lm", self.S4, 2 * (self.Dt[0] - self.Da), self.Coca)  # shape (ao, mo)
+            g = 4 * contract("ijkl,ij,km->lm", self.S4, 2 * (self.Dt[0] - self.Da), self.Coca)  # shape (ao, mo)
             u = 0.5 * contract("lm,lm->m", self.Coca, g)  # shape (mo, )
             g -= 2 * contract('m,ij,jm->im', u, self.S2, self.Coca) # shape (ao, mo)
-            for idx in range(self.nalpha):
+            for idx in range(self.Coca.shape[1]):
                 LHS = self.Fock - self.S2 * self.eigvecs_a[idx]
-                p_i = np.linalg.solve(LHS, g[:, idx])
+                LHStemp = np.vstack((LHS, self.Coca[:, idx]))
+                gtemp = np.concatenate((g[:, idx], (0.,)))
+                p_i = np.linalg.pinv(LHStemp) @ gtemp
                 # Gram–Schmidt rotation
                 p_i -= np.sum(p_i * np.dot(self.S2, self.Coca[:,idx])) * self.Coca[:,idx]
-                assert np.allclose([np.sum(p_i * (self.S2 @ self.Coca[:,idx])), np.linalg.norm(np.dot(LHS,p_i)-g[:, idx]), np.sum(g[:, idx]*self.Coca[:,idx])], 0, atol=1e-4)
+                if not np.allclose(np.sum(p_i * (self.S2 @ self.Coca[:,idx])), 0.0, atol=1e-4): print("p psi", idx, np.sum(p_i * (self.S2 @ self.Coca[:,idx])))
+                if not np.allclose(np.linalg.norm(np.dot(LHS,p_i)-g[:, idx]), 0.0, atol=1e-4):  print("Hp=g", idx, np.linalg.norm(np.dot(LHS,p_i)-g[:, idx]))
+                if not np.allclose(np.sum(g[:, idx]*self.Coca[:,idx]), 0.0, atol=1e-4): print("p g", idx, np.sum(g[:, idx]*self.Coca[:,idx]))
                 grad_temp += p_i[:, np.newaxis] * self.Coca[:,idx]
 
             self.grad = contract("ij,ijk->k", grad_temp, self.S3)
+
+            if len(self.grad) < len(v):
+                num_extra_var = len(v) - len(self.grad)
+                grad_nalpha_occ = np.einsum("ij,km,lm,ijkl->m", (self.Da - self.Dt[0]), self.Ca[:, :num_extra_var], self.Ca[:, :num_extra_var], self.S4) 
+                grad_nalpha_occ -= np.einsum("ij,k,l,ijkl->", (self.Da - self.Dt[0]), self.Ca[:, num_extra_var], self.Ca[:, num_extra_var], self.S4)
+                grad_nalpha_occ *= 2
+                print("grad_nalpha_occ", grad_nalpha_occ)
+                self.grad = np.concatenate((self.grad, grad_nalpha_occ))
         else:
             grad_temp_a = np.zeros((self.nbf, self.nbf))
             g_a = 4 * contract("ijkl,ij,km->lm", self.S4, (self.Dt[0] - self.Da), self.Coca)  # shape (ao, mo)
             u_a = 0.5 * contract("lm,lm->m", self.Coca, g_a)  # shape (mo, )
             g_a -= 2 * contract('m,ij,jm->im', u_a, self.S2, self.Coca) # shape (ao, mo)
-            for idx in range(self.nalpha):
+            for idx in range(self.Coca.shape[1]):
                 LHS = self.Fock[0] - self.S2 * self.eigvecs_a[idx]
-                p_i = np.linalg.solve(LHS, g_a[:, idx])
+                LHStemp = np.vstack((LHS, self.Coca[:, idx]))
+                gtemp = np.concatenate((g_a[:, idx], (0.,)))
+                p_i = np.linalg.pinv(LHStemp) @ gtemp
                 # Gram–Schmidt rotation
                 p_i -= np.sum(p_i * np.dot(self.S2, self.Coca[:,idx])) * self.Coca[:,idx]
-                if not np.allclose([np.sum(p_i * (self.S2 @ self.Coca[:,idx])), np.linalg.norm(np.dot(LHS,p_i)-g_a[:, idx]), np.sum(g_a[:, idx]*self.Coca[:,idx])], 0, atol=1e-4):
-                    print([np.sum(p_i * (self.S2 @ self.Coca[:,idx])), np.linalg.norm(np.dot(LHS,p_i)-g_a[:, idx]), np.sum(g_a[:, idx]*self.Coca[:,idx])])
+                if not np.allclose(np.sum(p_i * (self.S2 @ self.Coca[:,idx])), 0.0, atol=1e-4): print("p psi", idx, np.sum(p_i * (self.S2 @ self.Coca[:,idx])))
+                if not np.allclose(np.linalg.norm(np.dot(LHS,p_i)-g_a[:, idx]), 0.0, atol=1e-4):  print("Hp=g", idx, np.linalg.norm(np.dot(LHS,p_i)-g_a[:, idx]))
+                if not np.allclose(np.sum(g_a[:, idx]*self.Coca[:,idx]), 0.0, atol=1e-4): print("p g", idx, np.sum(g_a[:, idx]*self.Coca[:,idx]))
                 grad_temp_a += p_i[:, np.newaxis] * self.Coca[:,idx]
 
 
@@ -172,25 +181,39 @@ class PDECO():
             g_b = 4 * contract("ijkl,ij,km->lm", self.S4, (self.Dt[1] - self.Db), self.Cocb)  # shape (ao, mo)
             u_b = 0.5 * contract("lm,lm->m", self.Cocb, g_b)  # shape (mo, )
             g_b -= 2 * contract('m,ij,jm->im', u_b, self.S2, self.Cocb) # shape (ao, mo)
-            for idx in range(self.nbeta):
+            for idx in range(self.Cocb.shape[1]):
                 LHS = self.Fock[1] - self.S2 * self.eigvecs_b[idx]
-                p_i = np.linalg.solve(LHS, g_b[:, idx])
+                LHStemp = np.vstack((LHS, self.Coca[:, idx]))
+                gtemp = np.concatenate((g_b[:, idx], (0.,)))
+                p_i = np.linalg.pinv(LHStemp) @ gtemp
                 # Gram–Schmidt rotation
                 p_i -= np.sum(p_i * np.dot(self.S2, self.Cocb[:,idx])) * self.Cocb[:,idx]
-                if not np.allclose([np.sum(p_i * (self.S2 @ self.Cocb[:,idx])), np.linalg.norm(np.dot(LHS,p_i)-g_b[:, idx]), np.sum(g_b[:, idx]*self.Cocb[:,idx])], 0, atol=1e-4):
-                    print([np.sum(p_i * (self.S2 @ self.Cocb[:,idx])), np.linalg.norm(np.dot(LHS,p_i)-g_b[:, idx]), np.sum(g_b[:, idx]*self.Cocb[:,idx])])
+                if not np.allclose(np.sum(p_i * (self.S2 @ self.Cocb[:,idx])), 0.0, atol=1e-4): print("p psi", idx, np.sum(p_i * (self.S2 @ self.Cocb[:,idx])))
+                if not np.allclose(np.linalg.norm(np.dot(LHS,p_i)-g_b[:, idx]), 0.0, atol=1e-4):  print("Hp=g", idx, np.linalg.norm(np.dot(LHS,p_i)-g_b[:, idx]))
+                if not np.allclose(np.sum(g_b[:, idx]*self.Cocb[:,idx]), 0.0, atol=1e-4): print("p g", idx, np.sum(g_b[:, idx]*self.Cocb[:,idx]))
                 grad_temp_b += p_i[:, np.newaxis] * self.Cocb[:,idx]
 
             self.grad = np.concatenate((contract("ij,ijk->k", grad_temp_a, self.S3), contract("ij,ijk->k", grad_temp_b, self.S3)))
+            
+            if len(self.grad) < len(v):
+                num_extra_var = len(v) - len(self.grad)
+                num_extra_var = num_extra_var // 2
+                grad_nalpha_occ = np.einsum("ij,km,lm,ijkl->m", (self.Da - self.Dt[0]), self.Ca[:, :num_extra_var], self.Ca[:, :num_extra_var], self.S4) 
+                grad_nalpha_occ -= np.einsum("ij,k,l,ijkl->m", (self.Da - self.Dt[0]), self.Ca[:, num_extra_var], self.Ca[:, num_extra_var], self.S4)
+                grad_nalpha_occ *= 2
+                grad_nbeta_occ = np.einsum("ij,km,lm,ijkl->m", (self.Db - self.Dt[1]), self.Cb[:, :num_extra_var], self.Cb[:, :num_extra_var], self.S4) 
+                grad_nbeta_occ -= np.einsum("ij,k,l,ijkl->", (self.Db - self.Dt[1]), self.Cb[:, num_extra_var], self.Cb[:, num_extra_var], self.S4)
+                grad_nbeta_occ *= 2
+                self.grad = np.concatenate((self.grad, grad_nalpha_occ, grad_nbeta_occ))
 
         if self.lambda_reg is not None:
             T = self.T_pbs
             if self.ref == 1:
                 rgl_vector = 4 * self.lambda_reg*np.dot(T, v[:self.npbs])
-                self.grad += rgl_vector
+                self.grad[:self.npbs] += rgl_vector
             else:
                 self.grad[:self.npbs] += 2 * self.lambda_reg*np.dot(T, v[:self.npbs])
-                self.grad[self.npbs:] += 2 * self.lambda_reg*np.dot(T, v[self.npbs:])
+                self.grad[self.npbs:2*self.npbs] += 2 * self.lambda_reg*np.dot(T, v[self.npbs:2*self.npbs])
         return self.grad
 
     def find_regularization_constant_pdeco(self, opt_max_iter, opt_method="L-BFGS-B", gtol=1e-3,

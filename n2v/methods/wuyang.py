@@ -97,18 +97,25 @@ class WuYang():
         """
         Diagonalize Fock matrix with additional external potential
         """
-        self.v_pbs = np.copy(v)
+        # self.v_pbs = np.copy(v)
+        if self.nalpha_occ is not None:
+            assert np.all(self.nalpha_occ>=0), self.nalpha_occ
+            assert np.all(self.nalpha_occ<=1), self.nalpha_occ
+        if self.nbeta_occ is not None:
+            assert np.all(self.nbeta_occ>=0), self.nbeta_occ
+            assert np.all(self.nbeta_occ<=1), self.nbeta_occ
         vks_a = contract("ijk,k->ij", self.S3, v[:self.npbs]) + self.va
-        fock_a = self.V + self.T + vks_a 
-        self.Ca, self.Coca, self.Da, self.eigvecs_a = self.diagonalize( fock_a, self.nalpha )
-
+        fock_a = self.V + self.T + vks_a
+        #print("nalpha_occ", self.nalpha_occ)
+        self.Ca, self.Coca, self.Da, self.eigvecs_a = self.diagonalize( fock_a, self.nalpha, self.nalpha_occ)
+        #print("eig:", self.eigvecs_a[:4], "nalpha_occ", self.nalpha_occ)
         if self.ref == 1:
             self.Cb, self.Cocb, self.Db, self.eigvecs_b = self.Ca.copy(), self.Coca.copy(), self.Da.copy(), self.eigvecs_a.copy()
             self.Fock =  fock_a
         else:
             vks_b = contract("ijk,k->ij", self.S3, v[self.npbs:]) + self.vb
             fock_b = self.V + self.T + vks_b        
-            self.Cb, self.Cocb, self.Db, self.eigvecs_b = self.diagonalize( fock_b, self.nbeta )
+            self.Cb, self.Cocb, self.Db, self.eigvecs_b = self.diagonalize( fock_b, self.nbeta, self.nbeta_occ)
             self.Fock =  (fock_a, fock_b)
 
     def lagrangian_wy(self, v):
@@ -123,6 +130,10 @@ class WuYang():
         self._diagonalize_with_potential_pbs(v)
         self.grad_a = contract('ij,ijt->t', (self.Da - self.Dt[0]), self.S3)
         self.grad_b = contract('ij,ijt->t', (self.Db - self.Dt[1]), self.S3)
+        if self.ref == 1:
+            self.grad   = self.grad_a
+        else:
+            self.grad   = np.concatenate(( self.grad_a, self.grad_b ))
 
         kinetic     =   np.sum(self.T * (self.Da))
         potential   =   np.sum((self.V + self.va) * (self.Da - self.Dt[0]))
@@ -151,7 +162,7 @@ class WuYang():
         # if print_flag:
         # print(f"Kinetic: {kinetic:6.4f} | Potential: {np.abs(potential):6.4e} | From Optimization: {np.abs(optimizing):6.4e}")
         # print(-L)
-        print(f"L={-L.real:.5f}, |grad|={np.linalg.norm(self.grad_a):.2e}, |x|={np.linalg.norm(v):.3f}.")
+        print(f"L={-L.real:.5f}, |grad|={np.linalg.norm(self.grad):.2e}, |x|={np.linalg.norm(v):.3f}.")
         return - L
 
     def gradient_wy(self, v):

@@ -114,6 +114,8 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
         self.nbf       = wfn.basisset().nbf()
         self.nalpha    = wfn.nalpha()
         self.nbeta     = wfn.nbeta()
+        self.nalpha_occ = None
+        self.nbeta_occ = None
         if ref is None:
             self.ref       = 1 if psi4.core.get_global_option("REFERENCE") == "RHF" or \
                                 psi4.core.get_global_option("REFERENCE") == "RKS" else 2
@@ -128,23 +130,15 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
 
         self.Dt        = (np.array(wfn.Da_subset("AO")), np.array(wfn.Db_subset("AO")))
         self.ct        = (np.array(wfn.Ca_subset("AO", "OCC")), np.array(wfn.Cb_subset("AO", "OCC")))
-        if pbs == "same":
-            self.pbs       = self.basis
-            self.pbs_str   = pbs
-            self.npbs      = self.pbs.nbf()
-            self.v_pbs     = np.zeros( (self.npbs) ) if self.ref == 1 \
-                                                        else np.zeros( 2 * self.npbs )
-            self.generate_mints_matrices()
-        else:
-            self.update_pbs(pbs)
-            
+        
+        self.C422 = None # Transformation matrix for \phi_i(r)\phi_j(r) to a orthonormal set.
+        self.update_pbs(pbs)
 
         self.grid = data_bucket
         self.cubic_grid = data_bucket
         
         self.J0 = None
         self.S4 = None  # Entry to save the 4 overlap matrix.
-
     #------------->  Basics:
 
     def generate_mints_matrices(self):
@@ -159,12 +153,14 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
         A = mints.ao_overlap()
         A.power( -0.5, 1e-16 )
         self.A = np.array(A)
-        self.S3 = np.squeeze(mints.ao_3coverlap(self.basis,self.basis,self.pbs))
+        if self.pbs != "double":
+            self.S3 = np.squeeze(mints.ao_3coverlap(self.basis, self.basis, self.pbs))
 
         #Core Matrices
         self.T = np.array(mints.ao_kinetic()).copy()
         self.V = np.array(mints.ao_potential()).copy()
-        self.T_pbs = np.array(mints.ao_kinetic(self.pbs, self.pbs)).copy()
+        if self.pbs != "double":
+            self.T_pbs = np.array(mints.ao_kinetic(self.pbs, self.pbs)).copy()
 
         # when JK is none, produce ERI matrix
         if self.jk is None and self.ERI_Quv_DF is None:
@@ -176,14 +172,39 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
             self.ERI_PQ_DF = inv(self.ERI_PQ_DF, overwrite_a=True)
             self.ERI_PQ_DF = 0.5 * (self.ERI_PQ_DF + self.ERI_PQ_DF.T)
 
-    def update_pbs(self, new_pbs: psi4.core.BasisSet):
-        self.pbs = new_pbs
-        self.npbs = self.pbs.nbf()
-
-        self.v_pbs = np.zeros((self.npbs)) if self.ref == 1 else np.zeros(2 * self.npbs)
+    def update_pbs(self, pbs: psi4.core.BasisSet):
+        if pbs == "same":
+            self.pbs       = self.basis
+            self.pbs_str   = pbs
+            self.npbs      = self.pbs.nbf()
+            self.v_pbs     = np.zeros( (self.npbs) ) if self.ref == 1 else np.zeros( 2 * self.npbs )
+        elif pbs == "double":
+            self.pbs       = "double"
+            self.pbs_str   = pbs
+            S = self.fouroverlap()
+            S = S.reshape((S.shape[0]*S.shape[1], S.shape[2]*S.shape[3]))
+            eigenvalues, eigenvectors = np.linalg.eigh(S)
+            # Filter out the significant eigenvalues and corresponding eigenvectors
+            tolerance = 1e-10  # Adjust this threshold as needed
+            indices = np.where(eigenvalues > tolerance)[0]
+            Lambda = np.diag(eigenvalues[indices])  # Diagonal matrix of the 81 largest eigenvalues
+            V = eigenvectors[:, indices]  # Corresponding eigenvectors
+            # Calculate the coefficient matrix C
+            C = V @ np.sqrt(np.linalg.inv(Lambda))
+            self.npbs = C.shape[1]
+            self.v_pbs     = np.zeros( (self.npbs) ) if self.ref == 1 else np.zeros( 2 * self.npbs )
+            self.S3 = S @ C
+            self.S3 = self.S3.reshape((self.nbf, self.nbf, self.npbs))
+            self.C422 = C
+            print(self.C422.shape)
+        else:
+            self.pbs = pbs
+            self.pbs_str = pbs.name()
+            self.npbs = self.pbs.nbf()
+            self.v_pbs = np.zeros((self.npbs)) if self.ref == 1 else np.zeros(2 * self.npbs)
+            
         self.generate_mints_matrices()
-
-        print("Potential Basis Set is update to %s with nbf=%i." % (self.pbs.name(), self.npbs))
+        print("Potential Basis Set is update to %s with nbf=%i." % (self.pbs_str, self.npbs))
         return
 
     def generate_jk(self, gen_K=False):
@@ -217,7 +238,7 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
         K = []
         return J, K
 
-    def diagonalize(self, matrix, ndocc):
+    def diagonalize( self, matrix, ndocc, occ=None):
         """
         Diagonalizes Fock Matrix
 
@@ -240,11 +261,15 @@ class Inverter(Direct, WuYang, ZMP, MRKS, OC, PDECO, Grider):
             Eigenvalues
         """
 
-        A = self.A
-        Fp = A.dot(matrix).dot(A)
+        Fp = self.A.dot(matrix).dot(self.A)
         eigvecs, Cp = np.linalg.eigh(Fp)
-        C = A.dot(Cp)
-        Cocc = C[:, :ndocc]
+        C = self.A.dot(Cp)
+        if occ is None:
+            Cocc = C[:, :ndocc]
+        else:
+            assert np.isclose(np.sum(occ), ndocc), (np.sum(occ), ndocc)
+            Cocc = np.copy(C[:, :len(occ)])
+            Cocc *= np.sqrt(occ)
         D = contract('pi,qi->pq', Cocc, Cocc)
         return C, Cocc, D, eigvecs
 
