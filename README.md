@@ -44,4 +44,7 @@ Copyright (c) 2021, Wasserman Group
 
 #### Acknowledgements
 *Victor H. Chavez* was supported by a fellowship from The Molecular Sciences Software Institute under NSF grant OAC-1547580.  
-Project based on the [MolSSI Cookiecutter](https://github.com/molssi/cookiecutter-cms).  
+Project based on the [MolSSI Cookiecutter](https://github.com/molssi/cookiecutter-cms). 
+
+#### TODO:
+We need to fix some bugs in n2v and make sure that n2v fit with new virsion of psi4 and pyscf. Remove libxc. 
