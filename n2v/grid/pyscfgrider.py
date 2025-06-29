@@ -36,6 +36,8 @@ if has_pyscf:
         def __init__(self, mol, pbs_mol):
 
             self.mol   = mol
+            
+            # these two are gbasis's basis, not pyscf.
             self.basis = from_pyscf(mol)
             self.pbs   = from_pyscf(pbs_mol) if pbs_mol is not None else None
 
@@ -83,7 +85,7 @@ if has_pyscf:
             grids = grids.build()
             return grids
 
-        def density(self, D, grid):
+        def density(self, D, grid, basis):
             """
             Computes density on grid. 
 
@@ -96,6 +98,8 @@ if has_pyscf:
                     D = D shape (nbf, nbf)
                 elif ref==2:
                     D = [Da, Db] shape (2, nbf, nbf)
+            basis:
+                AO basis
             grid: np.ndarray, shape (N, 3)
                 grid of length N.
                 
@@ -107,14 +111,13 @@ if has_pyscf:
                 (2, N) for ref=2  
                   
             """
-            if self.ref == 1:
-                assert D.ndim == 2
-                n = self.to_grid(D, grid, self.basis)
+            if D.ndim == 2:
+                n = self.to_grid(D, grid, basis)
                 return n
             else:
                 assert len(D) == 2
-                na = self.to_grid(D[0], grid, self.basis)
-                nb = self.to_grid(D[1], grid, self.basis)
+                na = self.to_grid(D[0], grid, basis)
+                nb = self.to_grid(D[1], grid, basis)
                 return np.array(na, nb)
 
         def hartree(self, D, grid):
@@ -148,7 +151,7 @@ if has_pyscf:
                                                     points_coords=grid, 
                                                     points_charge=-np.ones(grid.shape[0]), 
                                                     transform=None)
-            if self.ref == 2:
+            if D.ndim == 3:
                 D = D[0] + D[1]
             hartree_potential *= D[:, :, None]
             hartree_potential = np.sum(hartree_potential, axis=(0, 1))
@@ -197,13 +200,13 @@ if has_pyscf:
             """
             
             if basis is None:
-                basis = self.mol.basis
+                basis = self.basis
 
-            phis = dft.numint.eval_ao(basis, grid) # (N, num_ao_basis)
-            f_g =  phis @ f_nm
+            phis = evaluate_basis(basis, grid) # (num_ao_basis, N)
+            f_g =   f_nm @ phis
             
             if f_nm.ndim == 2:
-                f_g = np.sum(f_g * f_g.conj(), axis=1)
+                f_g = np.sum(f_g * phis.conj(), axis=0)
             return f_g
 
         def to_ao(self, f_g, grid: np.ndarray, weights: np.ndarray, basis=None):
@@ -226,10 +229,10 @@ if has_pyscf:
                 f_g in ao basis
             """
             if basis is None:
-                basis = self.mol.basis
+                basis = self.basis
                 
-            phis = dft.numint.eval_ao(basis, grid)
-            f_nm = contract( 'pb, p,p,pa->ab', phis.conj().T, f_g, weights, phis.T )
+            phis = evaluate_basis(basis, grid)
+            f_nm = contract( 'ap,p,p,bp->ab', phis.conj(), f_g, weights, phis)
             f_nm = 0.5 * (f_nm + f_nm.T)
             return f_nm
         
