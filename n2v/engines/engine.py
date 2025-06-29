@@ -142,19 +142,23 @@ class Engine(ABC):
         return S4
 
     @abstractmethod
-    def compute_hartree(self, Cocc_a, Cocc_b):
+    def compute_hartree(self, D):
         """
         Generates the Hartree potential on the atomic orbital basis set
         
         Parameters:
         -----------
-        Cocc_a, Cocc,b: np.ndarray. Size: (nbf, nbf)
-            Occupied molecular orbitals (alpha, beta)
+        D: np.ndarray
+            Density matrix for input data.
+            Following the pyscf interface.
+            if ref==1:
+                D = D shape (nbf, nbf)
+            elif ref==2:
+                D = [Da, Db] shape (2, nbf, nbf)
 
         Returns:
         --------
-        J: List of lenght two with np.ndarrays. 
-            Hartree potential on ao basis (alpha, beta)
+        J: Hartree potential on ao basis
         """
         return J
     

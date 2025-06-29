@@ -1,7 +1,7 @@
 """
 Provides interface n2v interface to PySCF
 """
-
+import warnings
 import numpy as np
 import scipy
 from opt_einsum import contract
@@ -9,7 +9,8 @@ from opt_einsum import contract
 from .engine import Engine
 
 try:
-    from pyscf import gto, dft
+    from pyscf import gto, dft, df, scf
+    from pyscf.scf.hf import get_jk
     has_pyscf = True
 except ImportError:
     has_pyscf = False
@@ -21,7 +22,7 @@ if has_pyscf:
         PySCF Engine
         """
 
-        def set_system(self, molecule, basis, ref=1, pbs='same'):
+        def set_system(self, molecule, ref=1, pbs='same'):
             """
             Stores basic information from a PySCF calculation
 
@@ -30,8 +31,6 @@ if has_pyscf:
             
             mol: pyscf.gto.mole.Mole
                 Pyscf molecule object
-            basis: str
-                Basis set for calculation
             ref: {1,2}
                 1 -> Restricted 
                 2 -> Unrestricted
@@ -39,7 +38,6 @@ if has_pyscf:
                 Basis set for expressing inverted potential
             """
             self.mol = molecule
-            self.basis_str = basis
             self.pbs_str = pbs
             self.ref = ref
 
@@ -78,7 +76,7 @@ if has_pyscf:
 
         def get_Tpbas(self):
             """
-            Generates Kinetic Operator in AO basis for additional basis. 
+            Generates Kinetic Operator in AO basis for potential basis. 
 
             Returns
             -------
@@ -118,7 +116,7 @@ if has_pyscf:
             """
             return self.mol.intor('int1e_ovlp')
 
-        def get_S3(self):
+        def get_S3(self, mol=None, pbs=None):
             """
             Builds 3 Overlap Matrix. 
             Manually built since Pyscf does not support it. 
@@ -128,88 +126,67 @@ if has_pyscf:
             S3: np.ndarray. Shape: (nbf, nbf, nbf or npbs)
                 Third dimension depends on wether an additional basis is used. 
             """
-
-            grid = dft.gen_grid.Grids(self.mol)
-            grid.build()
-            bs1 = dft.numint.eval_ao(self.mol, grid.coords)
-
-            if self.pbs_str == 'same':
-                S3 = contract('ij, ik, il, i -> jkl', bs1, bs1, bs1, grid.weights)
-                del bs1
-
-            else:
-                bs2 = dft.numint.eval_ao(self.pbs, grid.coords)
-                S3 = contract('ij, ik, il, i -> jkl', bs1, bs1, bs2, grid.weights)
-                del bs1
-                del bs2
+            if mol is None:
+                mol = self.mol
+            if pbs is None:
+                pbs = self.pbs
+            # returns an array of shape (naux, nao, nao)
+            S3 = df.incore.aux_e2(mol, pbs, intor='int3c1e', comp=1)
 
             return S3
 
-        def get_S4(self):
+        def get_S4_DF(self, mol=None):
             """
             Obtains a 4 AO Overlap Matrix using Density Fitting.
             """
-            
-            grid = dft.gen_grid.Grids(self.mol)
-            grid.build()
-            bs1 = dft.numint.eval_ao(self.mol, grid.coords)
-
-            # PySCF's DF basis are identified by the suffix "-jk-fit".
-            auxbasis = self.mol.basis + '-jk-fit'
-            mol_aux = gto.M(atom=self.mol.atom, basis=auxbasis)
-            bs2 = dft.numint.eval_ao(mol_aux, grid.coords)
-
-            S_Pmn = contract('ij, ik, il, i -> jkl', bs2, bs1, bs1, grid.weights)
-            S_PQ = mol_aux.mol.intor('int1e_ovlp')
+            if mol is None:
+                mol = self.mol
+                
+            mol_aux = df.make_auxmol(mol)
+            S_mnP = df.incore.aux_e2(mol, mol_aux, intor='int3c1e', comp=1)
+            S_PQ = mol_aux.intor('int1e_ovlp')
             S_PQinv = np.linalg.pinv(S_PQ, rcond=1e-9)
-            S4 = contract('Pmn,PQ,Qrs->mnrs', S_Pmn, S_PQinv, S_Pmn)
-
+            S4 = contract('mnP,PQ,rsQ->mnrs', S_mnP, S_PQinv, S_mnP)
             return S4
 
-        def compute_hartree(self, Cocc_a, Cocc_b=None):
+        def get_S4(self, mol=None):
             """
-            Computes Hartree Operator in AO basis
+            Obtains a 4 AO Overlap Matrix analytically.
+            """
+            if mol is None:
+                mol = self.mol
+            try:
+                ovlp4 = mol.intor('int4c1e', comp=1)
+            except:
+                warnings.warn("Direct 4 integral not found. Using DF instead.")
+                ovlp4 = self.get_S4_DF(mol)
+            return ovlp4
+
+        def compute_hartree(self, D):
+            """
+            Computes Hartree Operator in AO basis from atomic orbitals.
 
             Parameters
             ----------
-            ca: np.ndarray
-                Occupied Orbitals in AO basis
-            cb: np.ndarray
-                if ref == 2, cb -> Beta Occupied Orbitals in AO basis
+            D: np.ndarray
+                Density matrices.
+                Following the pyscf interface.
+                if ref==1:
+                    D = D shape (nbf, nbf)
+                elif ref==2:
+                    D = [Da, Db] shape (2, nbf, nbf)
             """
-            da = (Cocc_a @ Cocc_a.T)
-            if Cocc_a is not None:
-                db = (Cocc_b @ Cocc_b.T)
-            else:
-                db = da
-            mf = dft.uks.UKS(self.mol)
-            J = mf.get_j(dm=[da, db])
-
+            if D.ndim == 2:
+                if self.ref != 1:
+                    raise ValueError("Unrestricted calculations needs Db. ref={self.ref}.")
+            elif D.ndim == 3:
+                assert len(D) == 2
+                
+            J = get_jk(self.mol, dm=D)[0]
             return J
-        
-        def run_single_point(self, mol, basis, method):
-            """
-            Run a Standard calculation
-            """
-
-            # DFT
-            molecule = gto.Mole() 
-            molecule.atom = mol.atom
-            molecule.basis = basis
-            molecule.build()        
-
-            if self.ref == 1:
-                mf    = dft.RKS(mol)
-            else:
-                mf    = dft.UKS(mol)
-            mf.xc = method
-            mf.kernel()
-
-            return mf.make_rdm1(), mf.mo_coeff, mf.mo_energy 
 
 
-            # Post-SCF
-            
+        # Post-SCF
         def diagonalize( self, matrix, ndocc ):
             """
             Diagonalizes Fock Matrix

@@ -19,7 +19,8 @@ class WuYang():
 
     regul_norm = None  # Regularization norm: ||v||^2
     lambda_reg = None  # Regularization constant
-
+    pinv_cutoff = 1e-2
+    
     def wuyang(self, opt_max_iter, reg=None, tol=1e-7, gtol=1e-3,
                opt_method='trust-krylov', opt=None):
         """
@@ -74,116 +75,184 @@ class WuYang():
         self.Ca, self.Coca, self.Da, self.eigvecs_a = self.diagonalize( fock_a, self.nalpha )
 
         if self.ref == 1:
-            self.Cb, self.Cocb, self.Db, self.eigvecs_b = self.Ca.copy(), self.Coca.copy(), self.Da.copy(), self.eigvecs_a.copy()
+            self.Cb, self.Cocb, self.Db, self.eigvecs_b = self.Ca, self.Coca, self.Da, self.eigvecs_a
             self.Fock =  fock_a
         else:
             vks_b = contract("ijk,k->ij", self.S3, v[self.npbs:]) + self.vb
             fock_b = self.V + self.T + vks_b        
             self.Cb, self.Cocb, self.Db, self.eigvecs_b = self.diagonalize( fock_b, self.nbeta )
             self.Fock =  (fock_a, fock_b)
+        return 
 
-    def lagrangian_wy(self, v):
+    def _lagrangian_wy_R(self, v):
         """
         Lagrangian to be minimized wrt external potential
         Equation (5) of main reference
         """
-        # If v is not updated, will not re-calculate.
-        if not np.allclose(v, self.v_pbs):
-            self._diagonalize_with_potential_pbs(v)
+        assert self.ref == 1
+        assert np.allclose(self.Da, self.Db)
+        self._diagonalize_with_potential_pbs(v)
+        
+        D = self.Da + self.Db
+        grad_a = contract('ij,ijt->t', (D - self.Dt), self.S3)
 
-        self.grad_a = contract('ij,ijt->t', (self.Da - self.Dt[0]), self.S3)
-        self.grad_b = contract('ij,ijt->t', (self.Db - self.Dt[1]), self.S3)
+        kinetic     =   np.sum(self.T * D)
+        potential   =   np.sum((self.V + self.va) * (D - self.Dt))
+        optimizing  =   np.sum(v * grad_a)
 
-        kinetic     =   np.sum(self.T * (self.Da))
-        potential   =   np.sum((self.V + self.va) * (self.Da - self.Dt[0]))
-        optimizing  =   np.sum(v[:self.npbs] * self.grad_a)
-
-        if self.ref == 1:
-            L = 2 * (kinetic + potential + optimizing)
-
-        else:
-            kinetic    +=   np.sum(self.T * (self.Db))
-            potential  +=   np.sum((self.V + self.vb) * (self.Db - self.Dt[1]))
-            optimizing +=   np.sum(v[self.npbs:] * self.grad_b)
-            L = kinetic + potential + optimizing
+        L = (kinetic + potential + optimizing) 
 
         # Add lambda-regularization
         if self.lambda_reg is not None:
             T = self.T_pbs
-            if self.ref == 1:
-                norm = 2 * (v[:self.npbs] @ T @ v[:self.npbs])
-            else:
-                norm = (v[self.npbs:] @ T @ v[self.npbs:]) + (v[:self.npbs] @ T @ v[:self.npbs])
-
+            norm = 2 * (v.conj() @ T @ v)
             L -= norm * self.lambda_reg
             self.regul_norm = norm
-
-        # if print_flag:
-        #    print(f"Kinetic: {kinetic:6.4f} | Potential: {np.abs(potential):6.4e} | From Optimization: {np.abs(optimizing):6.4e}")
-
+        print(f"L={-L:.5f} |v|={np.linalg.norm(v):.5f}")
         return - L
 
-    def gradient_wy(self, v):
+    def _gradient_wy_R(self, v):
         """
         Calculates gradient wrt target density
         Equation (11) of main reference
         """
-        if not np.allclose(v, self.v_pbs):
-            self._diagonalize_with_potential_pbs(v)
-        self.grad_a = contract('ij,ijt->t', (self.Da - self.Dt[0]), self.S3)
-        self.grad_b = contract('ij,ijt->t', (self.Db - self.Dt[1]), self.S3)
-
-        if self.ref == 1:
-            self.grad   = self.grad_a
-        else:
-            self.grad   = np.concatenate(( self.grad_a, self.grad_b ))
+        assert self.ref == 1
+        self._diagonalize_with_potential_pbs(v)
+        
+        D = self.Da + self.Db
+        
+        self.grad_a = contract('ij,ijt->t', (D - self.Dt), self.S3)
+        self.grad   = self.grad_a
 
         if self.lambda_reg is not None:
             T = self.T_pbs
-            if self.ref == 1:
-                rgl_vector = 4 * self.lambda_reg*np.dot(T, v[:self.npbs])
-                self.grad -= rgl_vector
-            else:
-                self.grad[:self.npbs] -= 2 * self.lambda_reg*np.dot(T, v[:self.npbs])
-                self.grad[self.npbs:] -= 2 * self.lambda_reg*np.dot(T, v[self.npbs:])
-
+            rgl_vector = 2 * self.lambda_reg*np.dot(T, v)
+            self.grad -= rgl_vector
+        print(f"|grad|={np.linalg.norm(self.grad)}  |v|={np.linalg.norm(v):.5f}")
         return -self.grad
 
-    def hessian_wy(self, v):
+    def _hessian_wy_R(self, v):
         """
         Calculates gradient wrt target density
         Equation (13) of main reference
         """
+        assert self.ref == 1
+        self._diagonalize_with_potential_pbs(v)
+        
+        na, nb = self.nalpha, self.nbeta
 
-        if not np.allclose(v, self.v_pbs):
-            self._diagonalize_with_potential_pbs(v)
+        eigs_diff_a = self.eigvecs_a[:na, None] - self.eigvecs_a[None, na:]
+        C3a = contract('mi,va,mvt->iat', self.Ca[:,:na].conj(), self.Ca[:,na:], self.S3)
+        Ha = contract('iau,iat,ia->ut', C3a.conj(), C3a, eigs_diff_a**-1)
+
+        if self.lambda_reg is not None:
+            Ha -= 2 * self.T_pbs * self.lambda_reg
+        Hs = Ha
+        return -Hs.real
+
+
+    def _lagrangian_wy_U(self, v):
+        """
+        Lagrangian to be minimized wrt external potential
+        Equation (5) of main reference
+        """
+        assert self.ref == 2
+        self._diagonalize_with_potential_pbs(v)
+        
+        grad_a = contract('ij,ijt->t', (self.Da - self.Dt[0]), self.S3)
+        grad_b = contract('ij,ijt->t', (self.Db - self.Dt[1]), self.S3)
+
+        D = self.Da + self.Db
+        kinetic     =   np.sum(self.T * D)
+        potential   =   np.sum((self.V + self.va) * (self.Da - self.Dt[0]))
+        potential  +=   np.sum((self.V + self.vb) * (self.Db - self.Dt[1]))
+        
+        optimizing  =   np.sum(v[:self.npbs] * grad_a)
+        optimizing +=   np.sum(v[self.npbs:] * grad_b)
+        
+        L = kinetic + potential + optimizing
+
+        # Add lambda-regularization
+        if self.lambda_reg is not None:
+            T = self.T_pbs
+            norm = (v[self.npbs:] @ T @ v[self.npbs:]) + (v[:self.npbs] @ T @ v[:self.npbs])
+            L -= norm * self.lambda_reg
+            self.regul_norm = norm
+        return - L
+
+    def _gradient_wy_U(self, v):
+        """
+        Calculates gradient wrt target density
+        Equation (11) of main reference
+        """
+        assert self.ref == 2
+        self._diagonalize_with_potential_pbs(v)
+        
+        
+        self.grad_a = contract('ij,ijt->t', (self.Da - self.Dt[0]), self.S3)
+        self.grad_b = contract('ij,ijt->t', (self.Db - self.Dt[1]), self.S3)
+
+        self.grad   = np.concatenate(( self.grad_a, self.grad_b ))
+
+        if self.lambda_reg is not None:
+            T = self.T_pbs
+            self.grad[:self.npbs] -= 2 * self.lambda_reg*np.dot(T, v[:self.npbs])
+            self.grad[self.npbs:] -= 2 * self.lambda_reg*np.dot(T, v[self.npbs:])
+        return -self.grad
+
+    def _hessian_wy_U(self, v):
+        """
+        Calculates gradient wrt target density
+        Equation (13) of main reference
+        """
+        assert self.ref == 2
+        self._diagonalize_with_potential_pbs(v)
 
         na, nb = self.nalpha, self.nbeta
 
         eigs_diff_a = self.eigvecs_a[:na, None] - self.eigvecs_a[None, na:]
-        C3a = contract('mi,va,mvt->iat', self.Ca[:,:na], self.Ca[:,na:], self.S3)
-        Ha = 2 * contract('iau,iat,ia->ut', C3a, C3a, eigs_diff_a**-1)
+        C3a = contract('mi,va,mvt->iat', self.Ca[:,:na].conj(), self.Ca[:,na:], self.S3)
+        Ha = 2 * contract('iau,iat,ia->ut', C3a.conj(), C3a, eigs_diff_a**-1)
 
-        if self. ref == 1:
-            if self.lambda_reg is not None:
-                Ha -= 4 * self.T_pbs * self.lambda_reg
-            Hs = Ha
+        eigs_diff_b = self.eigvecs_b[:nb, None] - self.eigvecs_b[None, nb:]
+        C3b = contract('mi,va,mvt->iat', self.Cb[:,:nb].conj(), self.Cb[:,nb:], self.S3)
+        Hb = 2 * contract('iau,iat,ia->ut', C3b.conj(), C3b, eigs_diff_b**-1)
+        if self.lambda_reg is not None:
+            Ha -= 2 * self.T_pbs * self.lambda_reg
+            Hb -= 2 * self.T_pbs * self.lambda_reg
+        Hs = np.block(
+                        [[Ha,                               np.zeros((self.npbs, self.npbs))],
+                        [np.zeros((self.npbs, self.npbs)), Hb                              ]]
+                    )
 
+        return -Hs.real
+
+    def lagrangian_wy(self, v):
+        if self.ref == 1:
+            return self._lagrangian_wy_R(v)
         else:
-
-            eigs_diff_b = self.eigvecs_b[:nb, None] - self.eigvecs_b[None, nb:]
-            C3b = contract('mi,va,mvt->iat', self.Cb[:,:nb], self.Cb[:,nb:], self.S3)
-            Hb = 2 * contract('iau,iat,ia->ut', C3b, C3b, eigs_diff_b**-1)
-            if self.lambda_reg is not None:
-                Ha -= 2 * self.T_pbs * self.lambda_reg
-                Hb -= 2 * self.T_pbs * self.lambda_reg
-            Hs = np.block(
-                            [[Ha,                               np.zeros((self.npbs, self.npbs))],
-                            [np.zeros((self.npbs, self.npbs)), Hb                              ]]
-                        )
-
-        return - Hs
-
+            return self._lagrangian_wy_U(v)
+        
+    def gradient_wy(self, v):
+        if self.ref == 1:
+            return self._gradient_wy_R(v)
+        else:
+            return self._gradient_wy_U(v)
+        
+    def hessian_wy(self, v):
+        if self.ref == 1:
+            return self._hessian_wy_R(v)
+        else:
+            return self._hessian_wy_U(v)
+        
+    def hessian_v_p_wy(self, v, p):
+        return np.linalg.pinv(self.hessian_wy(v), rcond=self.pinv_cutoff) @ p
+    
+    def hessian_v_v_wy(self, v):
+        return np.linalg.pinv(self.hessian_wy(v), rcond=self.pinv_cutoff) @ v
+    
+    #TODO: Implement Prof Tim Gould's method here
+    
     def find_regularization_constant_wy(self, opt_max_iter, opt_method="trust-krylov", gtol=1e-3,
                                      tol=None, opt=None, lambda_list=None):
         """
@@ -250,18 +319,18 @@ class WuYang():
         self._diagonalize_with_potential_pbs(self.v_pbs)
 
         if opt_method.lower() == 'bfgs' or opt_method.lower() == 'l-bfgs-b':
-            initial_result = minimize(fun=self.lagrangian_wy,
-                                   x0=self.v_pbs,
-                                   jac=self.gradient_wy,
-                                   method=opt_method,
-                                   tol=tol,
-                                   options=opt
-                                   )
+                initial_result = minimize(fun=self.lagrangian_wy,
+                                    x0=self.v_pbs,
+                                    jac=self.gradient_wy,
+                                    method=opt_method,
+                                    tol=tol,
+                                    options=opt
+                                    )
         else:
             initial_result = minimize(fun=self.lagrangian_wy,
                                    x0=self.v_pbs,
                                    jac=self.gradient_wy,
-                                   hess=self.hessian_wy,
+                                   hessp=self.hessian_v_v_wy,
                                    method=opt_method,
                                    tol=tol,
                                    options=opt
@@ -304,3 +373,4 @@ class WuYang():
         P_list = lambda_list * np.array(v_norm_list) / (L0 - np.array(L_list))
 
         return lambda_list, P_list, np.array(Ts_list)
+

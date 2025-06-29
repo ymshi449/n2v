@@ -38,44 +38,10 @@ if has_pyscf:
             self.mol   = mol
             self.basis = from_pyscf(mol)
             self.pbs   = from_pyscf(pbs_mol) if pbs_mol is not None else None
-            self.atomic_charges = self.mol.atom_charges()
-            self.atomic_coords  = self.mol.atom_coords()
 
-            # Perform quick LDA calculation. Generates grid. 
-            mf = dft.UKS(self.mol)
-            mf.xc = 'svwn'
-            mf.kernel()
-            self.spherical_points = mf.grids().coords
-            self.w                = mf.grids().weights
-            self.mf = mf
 
-            # # Build spherical grid using \textit{grid}
-            # rad          = GaussLaguerre(70)
-            # becke = BeckeWeights(order=3)
-            # grid = MolGrid.from_preset( self.atomic_charges,
-            #                             self.atomic_coords, 
-            #                             rad,
-            #                             ['fine' for i in range(len(self.atomic_charges))],
-            #                             becke )
-            
-            # self.spherical_points = grid.points
-            # self.w                = grid.weights
-
-            # Build rectangular grid
-            self.rectangular_grid   = None
-
-        def assert_grid(self, grid):
-            if grid == 'spherical':
-                points = self.spherical_points
-            elif grid == 'rectangular':
-                assert self.rectangular_grid is not None, "Rectangular Grid must be defined first"
-                points = self.rectangular_grid
-            else: 
-                raise ValueError("Specify either spherical or rectangular grid")
         
-            return points
-
-        def generate_grid(self, x, y, z):
+        def generate_rectangular_grid(self, x, y, z):
             """
             Genrates Mesh from 3 separate linear spaces and flatten,
             needed for cubic grid.
@@ -86,7 +52,10 @@ if has_pyscf:
             Returns
             -------
             grid: np.ndarray
-                shape (3, len(x)*len(y)*len(z)).
+                shape (nx, ny, nz, 3).
+                nx=len(x)
+            shape: tuple
+                (nx, ny, nz) shape of rectangular grid.
             """
             # x,y,z, = grid
             shape = (len(x), len(y), len(z))
@@ -94,81 +63,77 @@ if has_pyscf:
             X = X.reshape((X.shape[0] * X.shape[1] * X.shape[2], 1))
             Y = Y.reshape((Y.shape[0] * Y.shape[1] * Y.shape[2], 1))
             Z = Z.reshape((Z.shape[0] * Z.shape[1] * Z.shape[2], 1))
-            grid = np.concatenate((X,Y,Z), axis=1).T
-
+            grid = np.concatenate((X,Y,Z), axis=1)
             return grid, shape
-
-        def build_rectangular(self, npoints):
+        
+        def generate_spherical_grid(self, level=4):
             """
-            Builds rectangular grid containing molecule
-
+            Genrates a spherical grid with pyscf.
             Parameters
             ----------
-            npoints: tuple
-                Number of points per dimension (n_x, n_y, n_z)
-            overage: float
-                Spacial extent of box
-
+            level: int
+                gird dense level
+            Returns
+            -------
+                grids: pyscf.dft.gen_grid.Grids
             """
-
-            # xmin, xmax = np.min(self.atomic_coords[:,0])+3, np.max(self.atomic_coords[:,0])+3
-            # ymin, ymax = np.min(self.atomic_coords[:,1])+3, np.max(self.atomic_coords[:,0])+3
-            # zmin, zmax = np.min(self.atomic_coords[:,2])+3, np.max(self.atomic_coords[:,0])+3
             
-            g1 = np.linspace(-10, 10, npoints[0])
-            g2 = np.linspace(0, 0, npoints[1])
-            g3 = np.linspace(0, 0, npoints[2])
-            gx, gy, gz = np.meshgrid(g1, g2, g3)
-            g3d = np.vstack( [gx.ravel(), gy.ravel(), gz.ravel()] ).T
+            grids = dft.gen_grid.Grids(self.mol)
+            grids.level = level
+            grids = grids.build()
+            return grids
 
-            self.x                = g1
-            self.y                = g2
-            self.z                = g3
-            self.rectangular_grid = g3d
-
-        def density(self, Da, Db=None, grid='spherical'):
+        def density(self, D, grid):
             """
             Computes density on grid. 
 
             Parameters
             ----------
-
-            density: np.ndarray.
-                Density in AO basis
-
-            grid: str.
-                Type of grid used. Default spherical 
-                If 'rectangular' used self.rectangular_grid != None 
-
+            D: np.ndarray
+                Density matrices.
+                Following the pyscf interface.
+                if ref==1:
+                    D = D shape (nbf, nbf)
+                elif ref==2:
+                    D = [Da, Db] shape (2, nbf, nbf)
+            grid: np.ndarray, shape (N, 3)
+                grid of length N.
+                
             Returns
             -------
-            density_g: np.ndarray
-                Density on the requested grid    
+            n: np.ndarray
+                Density on the grid.
+                (N, ) for ref=1
+                (2, N) for ref=2  
+                  
             """
-
-            points = self.assert_grid(grid)
-
-            density_a = evaluate_density(Da, self.basis, points)
-            if Db is not None:
-                density_b = evaluate_density(Db, self.basis, points)
-                density_g = np.concatenate([density_a, density_b])
-                return density_g
+            if self.ref == 1:
+                assert D.ndim == 2
+                n = self.to_grid(D, grid, self.basis)
+                return n
             else:
-                return density_a
+                assert len(D) == 2
+                na = self.to_grid(D[0], grid, self.basis)
+                nb = self.to_grid(D[1], grid, self.basis)
+                return np.array(na, nb)
 
-        def hartree(self, density, grid='spherical'):
+        def hartree(self, D, grid):
             """
             Computes Hartree Potential on grid. 
 
             Parameters
             ----------
 
-            density: np.ndarray.
-                Density in AO basis
+            D: np.ndarray
+                Density matrices.
+                Following the pyscf interface.
+                if ref==1:
+                    D = D shape (nbf, nbf)
+                elif ref==2:
+                    D = [Da, Db] shape (2, nbf, nbf)
 
-            grid: str.
-                Type of grid used. Default spherical 
-                If 'rectangular' used self.rectangular_grid != None 
+            grid: np.ndarray, shape (N, 3)
+                grid of length N.
 
 
             Returns
@@ -177,47 +142,42 @@ if has_pyscf:
             hartree_potential: np.ndarray
                 Hartree potential on the requested grid
             """        
-            points = self.assert_grid(grid)
-
+            assert grid.shape[1] == 3
+            
             hartree_potential = point_charge_integral(self.basis, 
-                                                    points, 
-                                                    -np.ones(points.shape[0]), 
-                                                    transform=None, 
-                                                    coord_type='spherical')
-
-            hartree_potential *= density[:, :, None]
+                                                    points_coords=grid, 
+                                                    points_charge=-np.ones(grid.shape[0]), 
+                                                    transform=None)
+            if self.ref == 2:
+                D = D[0] + D[1]
+            hartree_potential *= D[:, :, None]
             hartree_potential = np.sum(hartree_potential, axis=(0, 1))
-
             return hartree_potential
 
-        def external(self, grid='spherical'):
+        def external(self, grid: np.ndarray):
             """
             Computes External Potential on grid. 
 
             Parameters
             ----------
-            grid: str
-                Type of grid used. Default spherical 
-                If 'rectangular' used self.rectangular_grid != None
+            grid: np.ndarray, shape (N, 3)
+                grid of length N.
 
             Returns
             -------
             external_potential: np.ndarray
                 External potential on the given grid. 
             """        
-            points = self.assert_grid(grid)       
-
-            old_settings = np.seterr(divide="ignore")  # silence warning for dividing by zero
-            external_potential = self.atomic_charges[None, :] \
-            / (np.sum((points[:, :, None] - self.atomic_coords.T[None, :, :]) ** 2, axis=1) ** 0.5)
-            np.seterr(**old_settings)
+            with np.errstate(divide="ignore"):  # silence warning for dividing by zero
+                external_potential = self.mol.atomic_charges()[None, :] \
+                / (np.sum((grid[:, None, :] - self.mol.atom_coords().T[None, :, :]) ** 2, axis=1) ** 0.5)
 
             if external_potential.ndim > 1:
                 external_potential = np.sum(external_potential, axis=1)
 
             return -external_potential
 
-        def to_grid(self, f_nm, grid='spherical'):
+        def to_grid(self, f_nm, grid: np.ndarray, basis=None):
             """
             Expresses a matrix quantity on the grid
 
@@ -226,31 +186,27 @@ if has_pyscf:
             coeff: np.ndarray
                 Vector/Matrix on ao basis. 
                 Shape: {(num_ao_basis, ), (num_ao_basis, num_ao_basis)}
-            grid: str
-                Type of grid used. Default spherical 
-                If 'rectangular' used self.rectangular_grid != None
-
+            grid: np.ndarray, shape (N, 3)
+                grid of length N.
+            basis:
+                pyscf basis. If None, use sekf.basis
             Returns
             -------
             f_g: np.ndarray
                 Vector/Matrix expressed on the requested grid
             """
             
-            points = self.assert_grid(grid)
+            if basis is None:
+                basis = self.mol.basis
 
-            if self.pbs is None:
-                basis = self.basis
-            else:
-                basis = self.pbs
-
-            phis = evaluate_basis(basis, points)
-            f_g = f_nm.dot(phis)
+            phis = dft.numint.eval_ao(basis, grid) # (N, num_ao_basis)
+            f_g =  phis @ f_nm
+            
             if f_nm.ndim == 2:
-                f_g *= phis
-
+                f_g = np.sum(f_g * f_g.conj(), axis=1)
             return f_g
 
-        def to_ao(self, f_g, grid='spherical'):
+        def to_ao(self, f_g, grid: np.ndarray, weights: np.ndarray, basis=None):
             """
             Expresses grid quantity on the AO basis
 
@@ -258,24 +214,26 @@ if has_pyscf:
             ----------
             f_g: np.ndarray
                 Function expressed in g points 
-            grid: str
-                The grid used: 'radial' or 'spherical'
-
+            grid: np.ndarray, shape (N, 3)
+                grid of length N.
+            weights: np.ndarray, shape (N, )
+                weights for integral
+            basis:
+                pyscf basis. If None, use sekf.basis
             Returns
             -------
             f_nm: np.ndarray
                 f_g in ao basis
             """
-
-            points = self.assert_grid(grid)
-
-            phis = evaluate_basis(self.basis, points)
-            f_nm = contract( 'pb, p,p,pa->ab', phis.T, f_g, self.w, phis.T )
+            if basis is None:
+                basis = self.mol.basis
+                
+            phis = dft.numint.eval_ao(basis, grid)
+            f_nm = contract( 'pb, p,p,pa->ab', phis.conj().T, f_g, weights, phis.T )
             f_nm = 0.5 * (f_nm + f_nm.T)
-
             return f_nm
         
-        def orbitals(self, C, grid='spherical'):
+        def orbitals(self, C, grid):
             """
             Obtains orbitals on grid
 
@@ -283,8 +241,8 @@ if has_pyscf:
             ----------
             C: np.ndarray
                 Molecular Orbitals on Atomic Orbital basis set. 
-            grid: str
-                The grid used: 'radial' or 'spherical'
+            grid: np.ndarray, shape (N, 3)
+                grid of length N.
 
             Returns
             -------
@@ -292,13 +250,11 @@ if has_pyscf:
                 Orbitals in g points in space
             """
 
-            points = self.assert_grid(grid)
-
-            phis = evaluate_basis(self.basis, points)
+            phis = evaluate_basis(self.basis, grid)
             mat_g = C.T.dot(phis)
             return mat_g
 
-        def laplacian_density(self, density, grid='spherical'):
+        def laplacian_density(self, density, grid):
             """
             Calculates the laplacian of the density
             
@@ -306,8 +262,8 @@ if has_pyscf:
             ----------
             density: np.ndarray
                 Density in the ao basis 
-            grid: str
-                The grid used: 'radial' or 'spherical'
+            grid: np.ndarray, shape (N, 3)
+                grid of length N.
 
             Returns
             -------
@@ -315,12 +271,10 @@ if has_pyscf:
                 Laplacian of density given on g points in space
             """
 
-            points = self.assert_grid(grid)
-
-            lap_density = evaluate_density_laplacian( density, self.basis, points )
+            lap_density = evaluate_density_laplacian( density, self.basis, grid)
             return lap_density
     
-        def gradient_density(self, density, grid='spherical'):        
+        def gradient_density(self, density, grid):        
             """
             Evaluatges gradient of density on requested grid
 
@@ -328,8 +282,8 @@ if has_pyscf:
             ----------
             density: np.ndarray
                 Density in the ao basis 
-            grid: str
-                The grid used: 'radial' or 'spherical'
+            grid: np.ndarray, shape (N, 3)
+                grid of length N.
 
             Returns
             -------
@@ -337,12 +291,10 @@ if has_pyscf:
                 Gradient of density given on g points in space
             """
 
-            points = self.assert_grid(grid)
-
-            grad_density = evaluate_density_gradient(density, self.basis, points)
+            grad_density = evaluate_density_gradient(density, self.basis, grid)
             return grad_density
             
-        def ao_deriv(self, derivs=[0,0,0], transform=None, grid='spherical'):
+        def ao_deriv(self, grid, derivs=[0,0,0], transform=None):
             """ 
             Calculates AO on the grid (and its derivatives). 
             If Transformation is given, e.g. ao2mo, MO will be given
@@ -359,8 +311,8 @@ if has_pyscf:
 
             transform: np.ndarray
                 Matrix to transform within basis. E.g. ao2mo -> MO will be given.
-            grid: str
-                The grid used: 'radial' or 'spherical'
+            grid: np.ndarray, shape (N, 3)
+                grid of length N.
 
             Returns
             -------
@@ -368,10 +320,8 @@ if has_pyscf:
                 Array of atomic orbitals and/or their derivatives. 
             """
 
-            points = self.assert_grid(grid)
-
-            orbs_deriv = evaluate_deriv_basis( self.basis, points, np.array(derivs), 
-                                            transform=transform )
+            orbs_deriv = evaluate_deriv_basis(self.basis, grid, np.array(derivs), 
+                                              transform=transform )
 
             return orbs_deriv
 

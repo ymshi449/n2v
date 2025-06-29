@@ -5,8 +5,6 @@ Functions associated with zmp inversion
 """
 
 
-import psi4
-psi4.core.be_quiet()
 import numpy as np
 from functools import reduce
 
@@ -25,7 +23,7 @@ class ZMP():
     """
     def zmp(self, 
             opt_max_iter=100, 
-            opt_tol= psi4.core.get_option("SCF", "D_CONVERGENCE"), 
+            opt_tol= 1e-7, 
             lambda_list=[70],
             zmp_mixing = 1,
             print_scf = False, 
@@ -39,14 +37,6 @@ class ZMP():
         Zhao + Morrison + Parr. 
         https://doi.org/10.1103/PhysRevA.50.2138
 
-        Additional DIIS algorithms obtained from:
-        2) 'Psi4NumPy: An interactive quantum chemistry programming environment 
-        for reference implementations and rapid development.' by 
-        Daniel G.A. Smith and others. 
-        https://doi.org/10.1021/acs.jctc.8b00286
-
-        Functionals that drive the SCF procedure are obtained from:
-        https://doi.org/10.1002/qua.26400
 
         Parameters:
         -----------
@@ -54,7 +44,7 @@ class ZMP():
             List of Lamda parameters used as a coefficient for Hartree
             difference in SCF cycle.
         zmp_mixing: float, optional
-            mixing \in [0,1]. How much of the new potential is added in.
+            mixing \\in [0,1]. How much of the new potential is added in.
             For example, zmp_mixing = 0 means the traditional ZMP, i.e. all the potentials from previous
             smaller lambda are ignored.
             Zmp_mixing = 1 means that all the potentials of previous lambdas are accumulated, the larger lambda
@@ -68,17 +58,17 @@ class ZMP():
         return:
             The result will be stored in self.proto_density_a and self.proto_density_b
             For zmp_mixing==1, restricted (ref==1):
-                self.proto_density_a = \sum_i lambda_i * (Da_i - Dt[0]) - 1/N * (Dt[0])
-                self.proto_density_b = \sum_i lambda_i * (Db_i - Dt[1]) - 1/N * (Dt[1]);
+                self.proto_density_a = \\sum_i lambda_i * (Da_i - Dt[0]) - 1/N * (Dt[0])
+                self.proto_density_b = \\sum_i lambda_i * (Db_i - Dt[1]) - 1/N * (Dt[1]);
             unrestricted (ref==1):
-                self.proto_density_a = \sum_i lambda_i * (Da_i - Dt[0]) - 1/N * (Dt[0] + Dt[1])
-                self.proto_density_b = \sum_i lambda_i * (Db_i - Dt[1]) - 1/N * (Dt[0] + Dt[1]);
+                self.proto_density_a = \\sum_i lambda_i * (Da_i - Dt[0]) - 1/N * (Dt[0] + Dt[1])
+                self.proto_density_b = \\sum_i lambda_i * (Db_i - Dt[1]) - 1/N * (Dt[0] + Dt[1]);
             For restricted (ref==1):
-                vxc = \int dr' \frac{self.proto_density_a + self.proto_density_b}{|r-r'|}
-                    = 2 * \int dr' \frac{self.proto_density_a}{|r-r'|};
+                vxc = \\int dr' \frac{self.proto_density_a + self.proto_density_b}{|r-r'|}
+                    = 2 * \\int dr' \frac{self.proto_density_a}{|r-r'|};
             for unrestricted (ref==2):
-                vxc_up = \int dr' \frac{self.proto_density_a}{|r-r'|}
-                vxc_down = \int dr' \frac{self.proto_density_b}{|r-r'|}.
+                vxc_up = \\int dr' \frac{self.proto_density_a}{|r-r'|}
+                vxc_down = \\int dr' \frac{self.proto_density_b}{|r-r'|}.
             To get potential on grid, one needs to do
                 vxc = self.on_grid_esp(Da=self.proto_density_a, Db=self.proto_density_b, grid=grid) for restricted;
                 vxc_up = self.on_grid_esp(Da=self.proto_density_a, Db=np.zeros_like(self.proto_density_a),
@@ -135,7 +125,6 @@ class ZMP():
 
 #------------->  Generate Fock Matrix:
                 vc = self.generate_s_functional(lam_i,
-                                                Cocca, Coccb, 
                                                 Da, Db)
 
                 #Equation 10 of Reference (1). Level shift. 
@@ -276,10 +265,10 @@ class ZMP():
 
         self.proto_density_a += successful_lam * successful_proto_density[0] * (1 - self.mixing)
         if self.guide_components.lower() == "fermi_amaldi":
-            # for ref==1, vxc = \int dr (proto_density_a + proto_density_b)/|r-r'| - 1/N*vH
+            # for ref==1, vxc = \\int dr (proto_density_a + proto_density_b)/|r-r'| - 1/N*vH
             if self.ref == 1:
                 self.proto_density_a -= (1 / (self.nalpha + self.nbeta)) * (self.Dt[0])
-            # for ref==1, vxc = \int dr (proto_density_a)/|r-r'| - 1/N*vH
+            # for ref==1, vxc = \\int dr (proto_density_a)/|r-r'| - 1/N*vH
             else:
                 self.proto_density_a -= (1 / (self.nalpha + self.nbeta)) * (self.Dt[0] + self.Dt[1])
 
@@ -291,10 +280,10 @@ class ZMP():
         if self.ref == 2:
             self.proto_density_b += successful_lam * successful_proto_density[1] * (1 - self.mixing)
             if self.guide_components.lower() == "fermi_amaldi":
-                # for ref==1, vxc = \int dr (proto_density_a + proto_density_b)/|r-r'| - 1/N*vH
+                # for ref==1, vxc = \\int dr (proto_density_a + proto_density_b)/|r-r'| - 1/N*vH
                 if self.ref == 1:
                     self.proto_density_b -= (1 / (self.nalpha + self.nbeta)) * (self.Dt[1])
-                # for ref==1, vxc = \int dr (proto_density_a)/|r-r'| - 1/N*vH
+                # for ref==1, vxc = \\int dr (proto_density_a)/|r-r'| - 1/N*vH
                 else:
                     self.proto_density_b -= (1 / (self.nalpha + self.nbeta)) * (self.Dt[0] + self.Dt[1])
             self.Db = Db
@@ -311,13 +300,13 @@ class ZMP():
 
 
 
-    def generate_s_functional(self, lam, Cocca, Coccb, Da, Db):
+    def generate_s_functional(self, lam, Da, Db):
         """
         Generates S_n Functional as described in:
         https://doi.org/10.1002/qua.26400
         """
 
-        J = self.eng.compute_hartree(Cocca, Coccb)
+        J = self.eng.compute_hartree([Da, Db])
 
         #Equation 7 of Reference (1)
         if self.ref == 1:

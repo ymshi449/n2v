@@ -6,12 +6,10 @@ from dataclasses import dataclass
 import numpy as np
 from opt_einsum import contract
 
+from .engines import PySCFEngine
 from .methods.zmp import ZMP
 from .methods.wuyang import WuYang
 from .methods.pdeco import PDECO
-from .methods.oucarter import OC
-from .methods.mrks import MRKS
-from .methods.direct import Direct
 
 @dataclass
 class V:
@@ -21,7 +19,7 @@ class V:
 class E:
     """Stores Energies"""
 
-class Inverter(Direct, ZMP, WuYang, PDECO, OC, MRKS):
+class Inverter(ZMP, WuYang, PDECO):
     """
     Attributes:
     ----------
@@ -80,21 +78,19 @@ class Inverter(Direct, ZMP, WuYang, PDECO, OC, MRKS):
         guide potential Fock matrix.
     """
 
-    def __init__( self, engine='psi4' ):
-        self.eng_str = engine.lower()
-        if engine.lower() == 'psi4':
-            from .engines import Psi4Engine
-            self.eng = Psi4Engine()
-        elif engine.lower() == 'pyscf':
-            from .engines import PySCFEngine
+    def __init__( self):
+        self.eng_str = 'pyscf'
+        if self.eng_str.lower() == 'psi4':
+            raise ValueError("psi4 support has been removed for maintainance simplicity. Please check the github version 1. branch for psi4 supports.")
+        elif self.eng_str.lower() == 'pyscf':
             self.eng = PySCFEngine()
         else:
-            raise ValueError("Engine name is incorrect. The availiable engines are: {psi4, pyscf}")
+            raise ValueError("Engine name is incorrect. The availiable engines are: {pyscf}")
             
     def __repr__( self ):
         return "n2v.Inverter"
 
-    def set_system( self, molecule, basis, ref=1, pbs='same' , **kwargs):
+    def set_system( self, molecule, Dt, ref=1, pbs='same', **kwargs):
         """
         Stores relevant information and intitializes Engine
 
@@ -104,23 +100,26 @@ class Inverter(Direct, ZMP, WuYang, PDECO, OC, MRKS):
             Molecule object of selected engine
         basis: str
             Basis set of the main calculation
+        Dt: np.ndarray
+            Density matrix for input data.
+            Following the pyscf interface.
+            if ref==1:
+                Dt = D shape (nbf, nbf)
+            elif ref==2:
+                Dt = [Da, Db] shape (2, nbf, nbf)
         ref: int
             reference for system. Restricted   -> 1
                                   Unrestricted -> 2
-        pbs: str, default='same'
+        pbs: str, default='same' # TODO: add product ones.
             Basis set for the potential
-        **kwargs:
-            Optional Parameters for different Engiens 
-            Psi4 Engine:
-                wfn : psi4.core.{RHF, UHF, RKS, UKS, Wavefunction, CCWavefuncion...}
-                Psi4 wavefunction object
-            PySCF Engine:
-                None
+            
+        integral_methods: str, default='save'
+            save the four-centor two-electron integral: mol.intor(“int2e”)
 
         """
         # Communicate TO engine
 
-        self.eng.set_system(molecule, basis, ref, pbs, **kwargs)
+        self.eng.set_system(molecule, ref, pbs, **kwargs)
         self.ref = ref
 
         self.nalpha = self.eng.nalpha
@@ -135,33 +134,17 @@ class Inverter(Direct, ZMP, WuYang, PDECO, OC, MRKS):
         self.npbs = self.eng.npbs
         self.v_pbs = np.zeros( (self.npbs) ) if self.ref == 1 \
                                              else np.zeros( 2 * self.npbs )
-
-    @classmethod
-    def from_wfn( self, wfn, pbs='same' ):
-        """
-        Generates Inverter directly from wavefunction. 
         
-        Parameters
-        ----------
-        wfn: Psi4.Core.{RHF, RKS, ROHF, CCWavefunction, UHF, UKS, CUHF}
-            Wavefunction Object
-        Returns
-        -------
-        inv: n2v.Inverter
-            Inverter Object. 
-        """
-        from .engines import Psi4Engine
-        inv = self( engine='psi4' )
-        inv.eng = Psi4Engine()
-        ref = 1 if wfn.to_file()['boolean']['same_a_b_dens'] else 2
-        inv.set_system( wfn.molecule(), wfn.basisset().name(), pbs=pbs, ref=ref, wfn=wfn )
-        inv.Dt = [ np.array(wfn.Da()), np.array(wfn.Db()) ]
-        inv.ct = [ np.array(wfn.Ca_subset("AO", "OCC")), np.array(wfn.Cb_subset("AO", "OCC")) ]
-        inv.et = [ np.array(wfn.epsilon_a_subset("AO", "OCC")), np.array(wfn.epsilon_b_subset("AO", "OCC")) ]
-        inv.eng_str = 'psi4'
-        inv.eng.wfn = wfn
+        self.Dt = Dt
+        if self.ref == 1:
+            assert self.Dt.shape == (self.nbf, self.nbf)
+        elif self.ref == 2:
+            assert len(Dt) == 2
+            assert self.Dt[0].shape == (self.nbf, self.nbf)
+            assert self.Dt[1].shape == (self.nbf, self.nbf)
+        else:
+            raise ValueError("ref should be 1 for restricted and 2 for unrestricted.")
 
-        return inv
 
     def set_basis_matrices( self ):
         """
@@ -178,21 +161,25 @@ class Inverter(Direct, ZMP, WuYang, PDECO, OC, MRKS):
 
         self.S4 = None
 
-    def compute_hartree( self, Cocc_a, Cocc_b ):
+    def compute_hartree( self, D):
         """
-        Computes Hartree Potential on AO basis set. 
+        Generates the Hartree potential on the atomic orbital basis set
+        
+        Parameters:
+        -----------
+        D: np.ndarray
+            Density matrix for input data.
+            Following the pyscf interface.
+            if ref==1:
+                D = D shape (nbf, nbf)
+            elif ref==2:
+                D = [Da, Db] shape (2, nbf, nbf)
 
-        Parameters
-        ----------
-        Cocc_a, Cocc_b: np.ndarray (nbf, nbf)
-            Occupied orbitals in ao basis
-
-        Returns
-        -------
-        J: List of np.ndarray
-            Hartree potential due to density from Cocc_a and Cocc_b
+        Returns:
+        --------
+        J: Hartree potential on ao basis
         """
-        return self.eng.compute_hartree(Cocc_a, Cocc_b )
+        return self.eng.compute_hartree(D)
 
     def diagonalize( self, matrix, ndocc ):
         """
@@ -221,7 +208,7 @@ class Inverter(Direct, ZMP, WuYang, PDECO, OC, MRKS):
         eigvecs, Cp = np.linalg.eigh(Fp)
         C = self.A.dot(Cp)
         Cocc = C[:, :ndocc]
-        D = contract('pi,qi->pq', Cocc, Cocc)
+        D = contract('pi,qi->pq', np.conj(Cocc), Cocc).real
         return C, Cocc, D, eigvecs
 
     def diagonalize_with_potential_vFock(self, v=None):
@@ -257,7 +244,7 @@ class Inverter(Direct, ZMP, WuYang, PDECO, OC, MRKS):
             self.Cb, self.Cocb, self.Db, self.eigvecs_b = self.diagonalize( fock_b, self.nbeta )    
 
     # Actual Methods
-    def generate_components(self, guide_components, **keywords):
+    def generate_components(self, guide_components):
         """
         Generates exact potential components to be added to
         the Hamiltonian to aide in the inversion procedure. 
@@ -265,28 +252,20 @@ class Inverter(Direct, ZMP, WuYang, PDECO, OC, MRKS):
         -----------
         guide_potential_components: list
             Components added as to guide inversion. 
-            Can be chosen from ["hartree", "fermi_amandi", "svwn"]
+            Can be chosen from ["hartree", "fermi_amandi"]
         """
 
         self.guide_components = guide_components
-        self.va = np.zeros( (self.nbf, self.nbf) )
-        self.vb = np.zeros( (self.nbf, self.nbf) )
-        self.J0 = self.compute_hartree(self.ct[0], self.ct[1])
+        self.J0 = self.compute_hartree(self.Dt)
         N       = self.nalpha + self.nbeta
 
-        if self.eng_str == 'psi4':
-            J0_NO = self.eng.hartree_NO(self.Dt[0])
-            self.J0 = J0_NO if J0_NO is not None else self.J0
-
-        if guide_components == 'none':
-            warn("No guide potential was provided. Convergence may not be achieved")
-        elif guide_components == 'hartree':
-            self.va += self.J0[0] + self.J0[1]
-            self.vb += self.J0[0] + self.J0[1]
-        elif guide_components == 'fermi_amaldi':
-            v_fa = (1-1/N) * (self.J0[0] + self.J0[1])
-            self.va += v_fa
-            self.vb += v_fa
+        if guide_components.lower() == 'hartree':
+            self.va = self.J0
+            self.vb = self.J0
+        elif guide_components.lower() == 'fermi_amaldi':
+            v_fa = (1-1/N) * self.J0
+            self.va = v_fa
+            self.vb = v_fa
         else:
             raise ValueError("Guide component not recognized")
 
@@ -312,7 +291,7 @@ class Inverter(Direct, ZMP, WuYang, PDECO, OC, MRKS):
         direct
         ------
         Direct inversion of a set of Kohn-Sham equations. 
-        $$v_{xc}(r) = \frac{1}{n(r)} \sum_i^N [\phi_i^{*} (r) \nabla^2 \phi_i(r) + \varepsilon_i | \phi_i(r)|^2] $$
+        $$v_{xc}(r) = \\frac{1}{n(r)} \\sum_i^N [\\phi_i^{*} (r) \\nabla^2 \\phi_i(r) + \\varepsilon_i | \\phi_i(r)|^2] $$
             Parameters:
             -----------
                 grid: np.ndarray, opt
@@ -357,7 +336,7 @@ class Inverter(Direct, ZMP, WuYang, PDECO, OC, MRKS):
                     List of Lamda parameters used as a coefficient for Hartree 
                     difference in SCF cycle.
                 zmp_mixing: float, optional
-                    mixing \in [0,1]. How much of the new potential is added in.
+                    mixing \\in [0,1]. How much of the new potential is added in.
                     For example, zmp_mixing = 0 means the traditional ZMP, i.e. all the potentials from previous
                     smaller lambda are ignored.
                     Zmp_mixing = 1 means that all the potentials of previous lambdas are accumulated, the larger lambda
@@ -371,17 +350,17 @@ class Inverter(Direct, ZMP, WuYang, PDECO, OC, MRKS):
                 return:
                     The result will be stored in self.proto_density_a and self.proto_density_b
                     For zmp_mixing==1, restricted (ref==1):
-                        self.proto_density_a = \sum_i lambda_i * (Da_i - Dt[0]) - 1/N * (Dt[0])
-                        self.proto_density_b = \sum_i lambda_i * (Db_i - Dt[1]) - 1/N * (Dt[1]);
+                        self.proto_density_a = \\sum_i lambda_i * (Da_i - Dt[0]) - 1/N * (Dt[0])
+                        self.proto_density_b = \\sum_i lambda_i * (Db_i - Dt[1]) - 1/N * (Dt[1]);
                     unrestricted (ref==1):
-                        self.proto_density_a = \sum_i lambda_i * (Da_i - Dt[0]) - 1/N * (Dt[0] + Dt[1])
-                        self.proto_density_b = \sum_i lambda_i * (Db_i - Dt[1]) - 1/N * (Dt[0] + Dt[1]);
+                        self.proto_density_a = \\sum_i lambda_i * (Da_i - Dt[0]) - 1/N * (Dt[0] + Dt[1])
+                        self.proto_density_b = \\sum_i lambda_i * (Db_i - Dt[1]) - 1/N * (Dt[0] + Dt[1]);
                     For restricted (ref==1):
-                        vxc = \int dr' \frac{self.proto_density_a + self.proto_density_b}{|r-r'|}
-                            = 2 * \int dr' \frac{self.proto_density_a}{|r-r'|};
+                        vxc = \\int dr' \\frac{self.proto_density_a + self.proto_density_b}{|r-r'|}
+                            = 2 * \\int dr' \\frac{self.proto_density_a}{|r-r'|};
                     for unrestricted (ref==2):
-                        vxc_up = \int dr' \frac{self.proto_density_a}{|r-r'|}
-                        vxc_down = \int dr' \frac{self.proto_density_b}{|r-r'|}.
+                        vxc_up = \\int dr' \\frac{self.proto_density_a}{|r-r'|}
+                        vxc_down = \\int dr' \\frac{self.proto_density_b}{|r-r'|}.
                     To get potential on grid, one needs to do
                         vxc = self.on_grid_esp(Da=self.proto_density_a, Db=self.proto_density_b, grid=grid) for restricted;
                         vxc_up = self.on_grid_esp(Da=self.proto_density_a, Db=np.zeros_like(self.proto_density_a),

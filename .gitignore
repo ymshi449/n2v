@@ -134,3 +134,5 @@ dmypy.json
 #Psi4
 psi.*.clean
 timer.dat
+
+yuming_temp_tests/
