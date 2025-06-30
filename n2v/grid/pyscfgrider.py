@@ -34,7 +34,6 @@ if has_pyscf:
         Provides methods to obtain components on the grid using the package gbasis
         """
         def __init__(self, mol, pbs_mol):
-
             self.mol   = mol
             
             # these two are gbasis's basis, not pyscf.

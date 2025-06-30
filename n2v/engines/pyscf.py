@@ -3,7 +3,7 @@ Provides interface n2v interface to PySCF
 """
 import warnings
 import numpy as np
-import scipy
+from scipy import linalg as scilag
 from opt_einsum import contract
 
 from .engine import Engine
@@ -22,7 +22,7 @@ if has_pyscf:
         PySCF Engine
         """
 
-        def set_system(self, molecule, ref=1, pbs='same'):
+        def set_system(self, molecule, pbs, ref=1, pbsrotation=True, product_basis=True, pbsrotcutoff=1e-1):
             """
             Stores basic information from a PySCF calculation
 
@@ -34,35 +34,71 @@ if has_pyscf:
             ref: {1,2}
                 1 -> Restricted 
                 2 -> Unrestricted
-            pbs: str. default: "same" (as calculation)
+            pbs: str.
                 Basis set for expressing inverted potential
+            pbsrotation: bool.
+                Whether to svd the pbs to get a orthonormal pbs.
+            product_basis: bool.
+                If we use pbs_new(r)=pbs(r) cross-plus ao(r)ao(r) also as the basis.
+            pbsrotcutoff: float.
+                If we rotate the basis, we get rid of the space with eig<pbsrotcutoff.
             """
             self.mol = molecule
             self.pbs_str = pbs
             self.ref = ref
-
-            if pbs != 'same': # Builds additional mole for secondary basis set
-                self.pbs = gto.Mole()
-                self.pbs.atom = self.mol.atom
-                self.pbs.basis = self.pbs_str
-                self.pbs.build()
-            else: 
-                self.pbs = None
-
+            self.pbsrotation = pbsrotation
+            self.product_basis = product_basis
+            self.pbsrotcutoff = pbsrotcutoff
+            if self.product_basis and not self.pbsrotation:
+                self.pbsrotation = True
+                print("Product basis sets best work with rotation. Set pbsrotation=True.")
+                
+            self.initialize_pbs()
+            
             self.nalpha = self.mol.nelec[0]
             self.nbeta = self.mol.nelec[1]
+            return
 
-        def initialize(self):
+        def initialize_pbs(self):
             """
-            Initializes different components for calculation.
+            Initialize the pbs object.
             """
-            self.nbf = self.mol.nao_nr()
-            if self.pbs_str == 'same':
-                self.npbs = self.nbf
+            self.pbs = gto.Mole()
+            self.pbs.atom = self.mol.atom
+            self.pbs.basis = self.pbs_str
+            self.pbs.build()
+            self.nbf = self.mol.nao
+            self.npbs = self.pbs.nao
+            
+            if self.pbsrotation:
+                # TODO: I do not know how to calculate the integral \\int dr ao(r) ao(r) pbs(r) pbs(r)
+                # So I would limit the product basis to be ao(r) ao(r) instead of pbs(r) pbs(r)
+                S2_pbs = self.get_S(self.pbs)
+                if self.product_basis:
+                    S3_pbs = self.get_S3(self.mol, self.pbs).reshape((self.nbf**2, self.npbs))
+                    S4_pbs = self.get_S4(self.mol).reshape((self.nbf**2, self.nbf**2))
+                    S_pbs = np.block([[S2_pbs, S3_pbs.T], [S3_pbs, S4_pbs]])
+                    self.S3pbs = np.concatenate((S3_pbs, S4_pbs), axis=1)
+                    self.S3pbs = self.S3pbs.reshape((self.nbf, self.nbf, -1))
+                else:
+                    S_pbs = S2_pbs
+                    self.S3pbs = self.get_S3(self.mol, self.pbs)
+                S_pbs = (S_pbs + S_pbs.T) / 2.
+                e, v = scilag.eigh(S_pbs)
+                self.pbs_rot = np.copy(v[:,e>self.pbsrotcutoff])
+                self.npbs = self.pbs_rot.shape[1]
+                self.S3pbs = self.S3pbs @ self.pbs_rot
             else:
-                self.npbs = self.pbs.nao_nr()
+                self.S3pbs = self.get_S3(self.mol, self.pbs)
+            return
+        
+        def initialize_grid(self):
+            """
+            Initializes different grid object.
+            """
 
             self.grid = PySCFGrider(self.mol, self.pbs)
+            return
         
         def get_T(self):
             """
@@ -103,18 +139,25 @@ if has_pyscf:
             A: np.ndarray. Shape: (nbf, nbf)
             """
             A = self.mol.intor('int1e_ovlp')
-            A = scipy.linalg.fractional_matrix_power(A, -.5)
+            A = scilag.fractional_matrix_power(A, -.5)
             return A
 
-        def get_S(self):
+        def get_S(self, mol=None):
             """
             Builds Overlap matrix of AO basis
-
+            
+            Parameters
+            ----------
+            mol: pyscf's mol
+                If None, use self.mol.
+            
             Returns
             -------
             S: np.ndarray. Shape: (nbf, nbf)
             """
-            return self.mol.intor('int1e_ovlp')
+            if mol is None:
+                mol = self.mol
+            return mol.intor('int1e_ovlp')
 
         def get_S3(self, mol=None, pbs=None):
             """
@@ -132,7 +175,6 @@ if has_pyscf:
                 pbs = self.pbs
             # returns an array of shape (naux, nao, nao)
             S3 = df.incore.aux_e2(mol, pbs, intor='int3c1e', comp=1)
-
             return S3
 
         def get_S4_DF(self, mol=None):
@@ -152,6 +194,8 @@ if has_pyscf:
         def get_S4(self, mol=None):
             """
             Obtains a 4 AO Overlap Matrix analytically.
+            TODO: there is a way to evaluate for different bs: using mol with some stacked basis.
+            
             """
             if mol is None:
                 mol = self.mol
@@ -186,6 +230,8 @@ if has_pyscf:
             return J
 
 
+        
+        
         # Post-SCF
         def diagonalize( self, matrix, ndocc ):
             """

@@ -10,7 +10,7 @@ class Engine(ABC):
         pass
 
     @abstractmethod
-    def set_system(self, molecule, basis, ref, pbs):
+    def set_system(self, molecule, pbs, ref, pbsrotation, product_basis, pbsrotcutoff):
         """
         Set system into engine. It is expected in this function to format each
         component in the appropriate way for the engine. 
@@ -26,11 +26,16 @@ class Engine(ABC):
         pass
 
     @abstractmethod
-    def initialize(self):
+    def initialize_grid(self):
         """
-        Initializes different components needed for inversions. This can include
-        the generation of the overlap and electric repulsion matrices. As well
-        as setting Coulomb/Exchange objects
+        Initializes different grid object.
+        """
+        pass
+
+    @abstractmethod
+    def initialize_pbs(self):
+        """
+        Initialize the pbs object.
         """
         pass
 
@@ -96,7 +101,7 @@ class Engine(ABC):
         return A
 
     @abstractmethod
-    def get_S(self):
+    def get_S(self, mol=None):
         """
         Generates the overlap matrix of the atomic orbital basis set. 
         
@@ -111,7 +116,7 @@ class Engine(ABC):
         return S
 
     @abstractmethod
-    def get_S3(self):
+    def get_S3(self, mol=None, pbs=None):
         """
         Generates the three overlap matrix of the atomic orbital basis set with
         the basis used to express the inverted potential. 
@@ -127,9 +132,24 @@ class Engine(ABC):
         return S3
 
     @abstractmethod
-    def get_S4(self):
+    def get_S4(self, mol=None):
         """
         Generates the four overlap matrix of 4 different orbital basis sets. 
+        
+        Parameters:
+        ----------
+        
+        Returns:
+        --------
+        S4: np.ndarray
+            Four overlap matrix
+        """
+        return S4
+    
+    @abstractmethod
+    def get_S4_DF(self, mol=None):
+        """
+        Generates the four overlap matrix of 4 different orbital basis sets  using Density Fitting.
         
         Parameters:
         ----------

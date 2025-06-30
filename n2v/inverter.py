@@ -90,7 +90,7 @@ class Inverter(ZMP, WuYang, PDECO):
     def __repr__( self ):
         return "n2v.Inverter"
 
-    def set_system( self, molecule, Dt, ref=1, pbs='same', **kwargs):
+    def set_system( self, molecule, Dt, pbs, ref=1, **kwargs):
         """
         Stores relevant information and intitializes Engine
 
@@ -119,14 +119,14 @@ class Inverter(ZMP, WuYang, PDECO):
         """
         # Communicate TO engine
 
-        self.eng.set_system(molecule, ref, pbs, **kwargs)
+        self.eng.set_system(molecule=molecule, ref=ref, pbs=pbs, **kwargs)
         self.ref = ref
 
         self.nalpha = self.eng.nalpha
         self.nbeta = self.eng.nbeta
 
         # Initialize ecompasses everything the engine builds with basis set 
-        self.eng.initialize()
+        self.eng.initialize_grid()
         self.set_basis_matrices()
 
         # Receive FROM engine
@@ -150,16 +150,15 @@ class Inverter(ZMP, WuYang, PDECO):
         """
         Generate basis dependant matrices
         """
-        self.T  = self.eng.get_T()
-        self.V  = self.eng.get_V()
-        self.A  = self.eng.get_A()
-        self.S2 = self.eng.get_S()
-        self.S3      = self.eng.get_S3()
+        self.T  = self.eng.get_T() # (nbf, nbf)
+        self.V  = self.eng.get_V() # (nbf, nbf)
+        self.A  = self.eng.get_A() # (nbf, nbf)
+        self.S2 = self.eng.get_S() # (nbf, nbf)
+        self.S3 = self.eng.S3pbs   # (nbf, nbf, npbs)
 
-        if self.eng.pbs_str != 'same':  
-            self.T_pbs  = self.eng.get_Tpbas()
-
+        self.T_pbs  = self.eng.get_Tpbas()
         self.S4 = None
+        return
 
     def compute_hartree( self, D):
         """

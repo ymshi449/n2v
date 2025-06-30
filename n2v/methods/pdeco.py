@@ -25,6 +25,7 @@ class PDECO():
         """
         Calls scipy minimizer to minimize lagrangian. 
         """
+        raise NotImplementedError("Need to fix the pyscf-only, product basis.")
         self.lambda_reg = reg
 
         self.lambda_reg = reg

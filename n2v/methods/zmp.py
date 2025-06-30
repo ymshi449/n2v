@@ -91,8 +91,10 @@ class ZMP():
             zmp_functional: options the penalty term.
             But others are not currently working except for Hartree penalty (original ZMP).
         ----------
-        """       
+        """ 
         # Target density on grid
+        raise NotImplementedError("Need to fix the pyscf-only, product basis.")
+        
         if self.ref == 1:
             D0 = self.eng.grid.density(Da=self.Dt[0])
         else:
