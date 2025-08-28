@@ -10,6 +10,7 @@ from .engines import PySCFEngine
 from .methods.zmp import ZMP
 from .methods.wuyang import WuYang
 from .methods.pdeco import PDECO
+from .methods.liebresponse import LiebResponse
 
 @dataclass
 class V:
@@ -19,7 +20,7 @@ class V:
 class E:
     """Stores Energies"""
 
-class Inverter(ZMP, WuYang, PDECO):
+class Inverter(ZMP, WuYang, PDECO, LiebResponse):
     """
     Attributes:
     ----------

@@ -8,6 +8,8 @@ import numpy as np
 from opt_einsum import contract
 from scipy.optimize import minimize
 
+from numpy.linalg import norm
+    
 class WuYang():
     """
     Performs Optimization as in: 10.1063/1.1535422 - Qin Wu + Weitao Yang
@@ -108,7 +110,7 @@ class WuYang():
             norm = 2 * (v.conj() @ T @ v)
             L -= norm * self.lambda_reg
             self.regul_norm = norm
-        print(f"L={-L:.5f} |v|={np.linalg.norm(v):.5f}")
+        print(f"L={-L:.5f} Ts={kinetic:.6f} |v|={np.linalg.norm(v):.5f}")
         return - L
 
     def _gradient_wy_R(self, v):
@@ -250,8 +252,6 @@ class WuYang():
     
     def hessian_v_v_wy(self, v):
         return np.linalg.pinv(self.hessian_wy(v), rcond=self.pinv_cutoff) @ v
-    
-    #TODO: Implement Prof Tim Gould's method here
     
     def find_regularization_constant_wy(self, opt_max_iter, opt_method="trust-krylov", gtol=1e-3,
                                      tol=None, opt=None, lambda_list=None):
